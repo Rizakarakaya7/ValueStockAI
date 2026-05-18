@@ -1,0 +1,13 @@
+# Gizli Çevre Değişkenleri
+.env
+
+# Python Sanal Ortam
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# IDE ve Sistem Dosyaları
+.vscode/
+.idea/
+.DS_Store

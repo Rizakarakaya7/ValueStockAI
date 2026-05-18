@@ -1,0 +1,10 @@
+fastapi==0.110.1
+uvicorn==0.29.0
+pydantic==2.6.4
+redis==5.0.3
+pandas==2.2.1
+numpy==1.26.4
+yfinance==0.2.37
+requests==2.31.0
+python-dotenv==1.0.1
+google-generativeai==0.4.1  # Gemini API için

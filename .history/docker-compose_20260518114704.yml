@@ -1,0 +1,40 @@
+services:
+  redis_cache:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: always
+
+  backend:
+    build: 
+      context: .               # Dockerfile'ı ana klasörde ara
+      dockerfile: Dockerfile
+    working_dir: /app/backend  # Tıpkı terminalde "cd backend" yapmak gibi!
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis_cache:6379/0
+    depends_on:
+      - redis_cache
+    restart: always
+    volumes:
+      - .:/app                 # Bütün kodları içeri bağla
+
+  frontend:
+    build: 
+      context: .               # Dockerfile'ı ana klasörde ara
+      dockerfile: Dockerfile
+    working_dir: /app/frontend # Tıpkı terminalde "cd frontend" yapmak gibi!
+    command: streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8502:8501"            # Eski projeyle çakışmasın diye portu 8502 yaptık
+    environment:
+      - BACKEND_URL=http://backend:8000
+    depends_on:
+      - backend
+    restart: always
+    volumes:
+      - .:/app

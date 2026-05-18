@@ -1,0 +1,20 @@
+# Kesin sürüm belirterek sürprizleri engelliyoruz
+FROM python:3.12.9-slim
+
+# Çalışma dizinini ayarla
+WORKDIR /app
+
+# Sistem bağımlılıklarını yükle (Pandas ve derleme gerektiren paketler için)
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Gereksinimleri kopyala ve yükle
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Proje dosyalarını kopyala
+COPY . .
+
+# FastAPI'yi asenkron olarak ayağa kaldır
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
