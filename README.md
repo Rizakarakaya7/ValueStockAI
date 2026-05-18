@@ -67,5 +67,5 @@ Projeyi kendi bilgisayarınızda çalıştırmak için aşağıdaki adımları i
 
 ### 1. Depoyu İndirin
 ```bash
-git clone [https://github.com/KULLANICI_ADIN/ValueStockAI.git](https://github.com/Rizakarakaya7/ValueStockAI.git)
+git clone [https://github.com/RizaKarakaya7/ValueStockAI.git](https://github.com/Rizakarakaya7/ValueStockAI.git)
 cd ValueStockAI
