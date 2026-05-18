@@ -35,6 +35,6 @@ services:
       - BACKEND_URL=http://backend:8000
     depends_on:
       - backend
-    restart: on-failure
+    restart: always
     volumes:
       - .:/app
