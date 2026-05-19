@@ -7,16 +7,17 @@ services:
 
   backend:
     build: 
-      context: .               # Dockerfile'ı ana klasörde ara
+      context: .
       dockerfile: Dockerfile
-    working_dir: /app/backend  # Tıpkı terminalde "cd backend" yapmak gibi!
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    working_dir: /app/backend
+    # ÇÖZÜM: --reload kaldırıldı. Artık tek bir stabil process çalışacak.
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
     ports:
-      - "8000:8000"
+      - "8000:8000"            # Windows üzerinden erişebilmek için portu açtık
     env_file:
       - .env
     environment:
-      - REDIS_URL=redis://redis_cache:6379/0
+      - REDIS_URL=redis://redis_cache:6379/0  # Docker iç ağından redis_cache adına gider
     depends_on:
       - redis_cache
     restart: always
@@ -30,9 +31,9 @@ services:
     working_dir: /app/frontend # Tıpkı terminalde "cd frontend" yapmak gibi!
     command: streamlit run app.py --server.port 8501 --server.address 0.0.0.0
     ports:
-      - "8525:8501"            # Eski projeyle çakışmasın diye portu 8502 yaptık
+      - "8525:8501"            # Tarayıcıdan erişeceğimiz port (8525 -> container içi 8501)
     environment:
-      - BACKEND_URL=http://backend:8000
+      - BACKEND_URL=http://backend:8000  # Docker iç ağından backend adına gider
     depends_on:
       - backend
     restart: on-failure

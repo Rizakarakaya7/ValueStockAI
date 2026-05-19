@@ -9,9 +9,13 @@ uvicorn==0.29.0
 # =========================================================
 pandas==2.2.1
 numpy==1.26.4
-yfinance==0.2.37
+yfinance>=0.2.62
 pyrate-limiter==2.10.0
 requests==2.31.0
+requests-ratelimiter==0.4.2
+requests-cache==1.2.0
+
+# (curl-cffi satırını tamamen silebilirsin, artık ona ihtiyacımız yok)
 
 # =========================================================
 # ASYNC HTTP CLIENTS

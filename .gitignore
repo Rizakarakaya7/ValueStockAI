@@ -11,3 +11,8 @@ __pycache__/
 .vscode/
 .idea/
 .DS_Store
+
+# Editor Geçmişi ve Önbellek Dosyaları
+.history/
+*.sqlite
+*.sqlite3
