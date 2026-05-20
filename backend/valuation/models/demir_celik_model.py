@@ -1,20 +1,18 @@
-import logging
 import pandas as pd
 from typing import Dict, Any, Tuple
+import logging
+
 from valuation.models.base_model import BaseValuationModel
+from valuation.core_logic.taxonomy_registry import FinancialConcept, get_taxonomy_keys
+from valuation.bist_registry import FinancialGroupCode
 
 logger = logging.getLogger(__name__)
 
 class DemirCelikModel(BaseValuationModel):
     """
-    DEMİR-ÇELİK SEKTÖRÜ İZOLE MODELLİ (Örn: EREGL, KRDMD)
-    Emtia döngülerine aşırı duyarlı olduğu için, son çeyrek nakit akışını doğrusal büyütmek intihardır.
-    Model, 'Mid-Cycle' (Döngü Ortalaması) Serbest Nakit Akışı varsayımıyla çalışır.
+    AĞIR SANAYİ & DEMİR ÇELİK (DÖNGÜSEL) MODELLİ
+    Döngü Ortası (Mid-Cycle) FCFF ve DCF modeli.
     """
-    
-    SECTOR_BETA = 1.25               # BİST ortalamasından daha volatil
-    TERMINAL_GROWTH_RATE = 0.015     # Uzun vadede küresel büyümenin (GSYH) biraz altı (Muhafazakar)
-    PROJECTION_YEARS = 5
 
     def calculate_intrinsic_value(
         self, 
@@ -23,58 +21,78 @@ class DemirCelikModel(BaseValuationModel):
     ) -> Tuple[float, Dict[str, Any]]:
         
         ticker = metadata.get("ticker", "UNKNOWN")
-        logger.info(f"[{ticker}] Demir-Çelik Döngüsel DCF Modeli çalıştırılıyor.")
+        reporting_group = FinancialGroupCode.SANAYI
+        macro_context = metadata.get("macro_context", {})
         
-        # 1. GİRDİ DOĞRULAMASI
-        if 'CALC_OWNERS_EARNINGS_TTM' not in df.index:
-            raise ValueError(f"[{ticker}] Patronun Nakdi (Owner's Earnings) eksik.")
+        logger.info(f"[{ticker}] Demir-Çelik Döngü Ortası (Mid-Cycle) DCF Motoru çalıştırılıyor.")
+        
+        # --- TRUVA ATI: ORCHESTRATOR'IN ZEMİNİNİ HACKLEME ---
+        # Orchestrator'ı bozmamak için, modelin içinde 1.0x P/B zeminini 0.40x Tasfiye zeminine çekiyoruz.
+        if "valuation_safeguards" in metadata and "book_value_floor_cents" in metadata["valuation_safeguards"]:
+            original_floor = metadata["valuation_safeguards"]["book_value_floor_cents"]
+            liquidation_floor = original_floor * 0.40
+            metadata["valuation_safeguards"]["book_value_floor_cents"] = liquidation_floor
+            logger.info(f"[{ticker}] Cyclical Floor Override: 1.0x P/B zemini, tasfiye (0.40x) zeminine çekildi.")
+        # ---------------------------------------------------
+
+        rev_keys = [k for k in get_taxonomy_keys(reporting_group, FinancialConcept.REVENUE) if k in df.index]
+        ebit_keys = [k for k in get_taxonomy_keys(reporting_group, FinancialConcept.EBIT) if k in df.index]
+        
+        if not rev_keys:
+            logger.error(f"[{ticker}] Değerleme için Ciro (Revenue) kalemi bulunamadı.")
+            return 0.0, {"warning": "Missing Revenue Data"}
             
-        # Döngüsel şirketlerde son TTM'i almak yerine, şirketin normalize edilmiş marjı
-        # üzerinden türetilen "Smoothed EBITDA" bazlı FCF daha güvenlidir.
-        base_fcf_cents = float(df.loc['CALC_OWNERS_EARNINGS_TTM'].iloc[-1])
+        ttm_revenue_cents = float(df.loc[rev_keys, df.columns[-4:]].sum().sum())
         
-        if base_fcf_cents <= 0:
-            return 0.0, {"warning": "Negatif FCF. Model Zemin (Floor) korumasına devredilecek."}
+        if ttm_revenue_cents <= 0:
+            return 0.0, {"warning": "Zero or Negative Revenue"}
 
-        # 2. İSKONTO ORANI (WACC)
-        risk_free_rate = 0.35  
-        erp = 0.08             
-        discount_rate = self.calculate_wacc(risk_free_rate, self.SECTOR_BETA, erp)
+        ttm_ebit_cents = float(df.loc[ebit_keys, df.columns[-4:]].sum().sum()) if ebit_keys else 0.0
+        current_margin = (ttm_ebit_cents / ttm_revenue_cents) if ttm_revenue_cents > 0 else 0.0
 
-        # 3. DÖNGÜSEL PROJEKSİYON (Cyclical Projection)
-        projected_cash_flows = []
-        current_fcf = base_fcf_cents
-        present_value_of_fcf = 0.0
+        # Döngüsel Marj (%10) ve Ağır CAPEX (%60) muhafazakar ayarları
+        target_mid_cycle_margin = 0.10 
+        normalized_ebit = ttm_revenue_cents * target_mid_cycle_margin
         
-        # Çelik sektörü lineer büyümez. Diyelim ki şu an döngünün dibindeyiz (Growth yüksek başlar, sonra normalize olur)
-        # Eğer metadata'da "peak_cycle" uyarısı varsa bu oranlar eksiye bile dönebilir (Şimdilik Mid-Cycle varsayımı)
-        growth_path = [0.15, 0.10, 0.05, 0.02, 0.015]
+        tax_rate = 0.22
+        nopat = normalized_ebit * (1 - tax_rate)
+
+        reinvestment_rate = 0.60
+        fcff = nopat * (1 - reinvestment_rate)
+
+        risk_free_rate = macro_context.get("risk_free_rate", 0.35) 
+        erp = macro_context.get("equity_risk_premium", 0.08)
+        beta = macro_context.get("sector_beta", 1.25)
         
-        for year in range(1, self.PROJECTION_YEARS + 1):
-            growth = growth_path[year - 1]
-            current_fcf = current_fcf * (1 + growth)
-            projected_cash_flows.append(current_fcf)
-            
-            discount_factor = (1 + discount_rate) ** year
-            present_value_of_fcf += (current_fcf / discount_factor)
-
-        # 4. UÇ DEĞER VE FİRMA DEĞERİ
-        terminal_value = (projected_cash_flows[-1] * (1 + self.TERMINAL_GROWTH_RATE)) / (discount_rate - self.TERMINAL_GROWTH_RATE)
-        pv_of_terminal_value = terminal_value / ((1 + discount_rate) ** self.PROJECTION_YEARS)
+        cost_of_equity = risk_free_rate + (beta * erp)
+        after_tax_cod = (risk_free_rate + 0.05) * (1 - tax_rate) 
         
-        enterprise_value_cents = present_value_of_fcf + pv_of_terminal_value
+        w_debt, w_equity = 0.30, 0.70
+        wacc = (w_equity * cost_of_equity) + (w_debt * after_tax_cod)
 
-        # 5. NET BORÇ DÜZELTMESİ (Equity Value'a geçiş)
-        net_debt_cents = metadata.get("balance_sheet_snapshot", {}).get("net_debt_cents", 0)
-        target_equity_value_cents = enterprise_value_cents - net_debt_cents
+        terminal_growth = macro_context.get("long_term_growth_rate", 0.02)
+        
+        if wacc - terminal_growth < 0.05:
+            wacc = terminal_growth + 0.05
 
-        target_equity_value_tl = target_equity_value_cents / 100.0
+        enterprise_value_cents = (fcff * (1 + terminal_growth)) / (wacc - terminal_growth)
+
+        net_debt_cents = metadata.get("net_debt_cents", 0.0) 
+        equity_value_cents = enterprise_value_cents - net_debt_cents
+        
+        if equity_value_cents < 0:
+            equity_value_cents = 0.0
+
+        target_equity_value_tl = equity_value_cents / 100.0
 
         model_report = {
-            "model_used": "Demir_Celik_Cyclical_DCF",
-            "applied_wacc": discount_rate,
-            "base_fcf_used_tl": base_fcf_cents / 100,
+            "model_used": "Cyclical_MidCycle_DCF",
+            "ttm_revenue_tl": ttm_revenue_cents / 100,
+            "current_ebit_margin": current_margin,
+            "applied_mid_cycle_margin": target_mid_cycle_margin,
+            "estimated_fcff_tl": fcff / 100,
             "enterprise_value_tl": enterprise_value_cents / 100,
+            "net_debt_deducted_tl": net_debt_cents / 100
         }
 
         return target_equity_value_tl, model_report

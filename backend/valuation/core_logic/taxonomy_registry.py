@@ -46,6 +46,7 @@ FINANCIAL_TAXONOMY: Dict[FinancialGroupCode, Dict[FinancialConcept, List[str]]] 
         FinancialConcept.REVENUE: ["Total Revenue", "Operating Revenue"],
         FinancialConcept.EBIT: ["EBIT", "Operating Income"],
         FinancialConcept.DEPRECIATION: ["Reconciled Depreciation", "Depreciation And Amortization", "Depreciation"],
+        FinancialConcept.NET_INCOME: ["Net Income", "Net Income Common Stockholders", "Net Income From Continuing And Discontinued Operation"], # <-- BURAYI EKLEDİK
         FinancialConcept.ONE_OFF_GAINS: ["Gain On Sale Of Security", "Other Non Operating Income Expenses"],
         FinancialConcept.ONE_OFF_LOSSES: ["Restructuring And Mergern Acquisition", "Impairment Of Capital Assets"],
         

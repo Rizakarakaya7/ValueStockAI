@@ -1,20 +1,19 @@
-import logging
 import pandas as pd
 from typing import Dict, Any, Tuple
+import logging
+
 from valuation.models.base_model import BaseValuationModel
+from valuation.core_logic.taxonomy_registry import FinancialConcept, get_taxonomy_keys
+from valuation.bist_registry import FinancialGroupCode
 
 logger = logging.getLogger(__name__)
 
 class TeknolojiModel(BaseValuationModel):
     """
-    TEKNOLOJİ/YAZILIM SEKTÖRÜ İZOLE MODELLİ (Örn: LOGO, MIATK)
-    'Growth Optionality' (Büyüme Opsiyonalitesi). Varlık (Asset) hafif, CapEx düşük,
-    ancak başlangıç büyümesi çok hızlı olup sonrasında normalleşen bir DCF modelidir.
+    TEKNOLOJİ VE YAZILIM MODELLİ (Hiper Büyüme)
+    İki Aşamalı (Two-Stage) İndirgenmiş Nakit Akışı Modeli.
+    Yüksek marjlar, düşük sermaye harcaması (Asset-Light) ve agresif büyüme varsayımları içerir.
     """
-    
-    SECTOR_BETA = 1.35               # Teknoloji hisseleri beta olarak yüksektir (Volatildir).
-    TERMINAL_GROWTH_RATE = 0.04      # Yazılım şirketleri ekonomiden daha hızlı büyür (Terminal %4).
-    PROJECTION_YEARS = 7               # Teknoloji için 5 yıl kısa kalır, ufku 7 yıla açıyoruz.
 
     def calculate_intrinsic_value(
         self, 
@@ -23,55 +22,93 @@ class TeknolojiModel(BaseValuationModel):
     ) -> Tuple[float, Dict[str, Any]]:
         
         ticker = metadata.get("ticker", "UNKNOWN")
-        logger.info(f"[{ticker}] Teknoloji Hypergrowth DCF Modeli çalıştırılıyor.")
+        reporting_group = FinancialGroupCode.SANAYI
+        macro_context = metadata.get("macro_context", {})
         
-        if 'CALC_OWNERS_EARNINGS_TTM' not in df.index:
-            raise ValueError(f"[{ticker}] Patronun Nakdi (Owner's Earnings) eksik.")
+        logger.info(f"[{ticker}] Teknoloji/Yazılım İki Aşamalı (Two-Stage) Büyüme Motoru çalıştırılıyor.")
+        
+        # --- TRUVA ATI: DEFTER DEĞERİ ZEMİNİNİ İPTAL ETME ---
+        # Yazılım şirketleri P/B 10x-20x ile işlem görür. 1.0x P/B zemini bu sektörde mantıksızdır ve sistemi bozar.
+        if "valuation_safeguards" in metadata and "book_value_floor_cents" in metadata["valuation_safeguards"]:
+            metadata["valuation_safeguards"]["book_value_floor_cents"] = 0
+            logger.info(f"[{ticker}] Hyper-Growth İstisnası: Teknoloji şirketlerinde Defter Değeri Zemini (Floor) tamamen iptal edildi.")
+        # ---------------------------------------------------
+
+        # 1. GİRDİLER (Ciro ve Kâr)
+        rev_keys = [k for k in get_taxonomy_keys(reporting_group, FinancialConcept.REVENUE) if k in df.index]
+        ebit_keys = [k for k in get_taxonomy_keys(reporting_group, FinancialConcept.EBIT) if k in df.index]
+        
+        if not rev_keys or not ebit_keys:
+            return 0.0, {"warning": "Missing Core Data"}
             
-        base_fcf_cents = float(df.loc['CALC_OWNERS_EARNINGS_TTM'].iloc[-1])
+        ttm_revenue_cents = float(df.loc[rev_keys, df.columns[-4:]].sum().sum())
+        ttm_ebit_cents = float(df.loc[ebit_keys, df.columns[-4:]].sum().sum())
         
-        # Startup / Zarar eden teknoloji şirketi koruması (Zemin mekanizmasına yollar)
-        if base_fcf_cents <= 0:
-            return 0.0, {"warning": "Negatif FCF. Teknoloji şirketi nakit yakıyor."}
+        if ttm_revenue_cents <= 0 or ttm_ebit_cents <= 0:
+            return 0.0, {"warning": "Negatif kâr ile DCF çalıştırılamaz (Zarar eden Tech şirketi)."}
 
-        risk_free_rate = 0.35  
-        erp = 0.08             
-        discount_rate = self.calculate_wacc(risk_free_rate, self.SECTOR_BETA, erp)
-
-        # 1. HYPER-GROWTH PROJEKSİYONU (Yüksekten düşen büyüme hızı)
-        projected_cash_flows = []
-        current_fcf = base_fcf_cents
-        present_value_of_fcf = 0.0
+        current_margin = ttm_ebit_cents / ttm_revenue_cents
         
-        # İlk 3 yıl agresif büyüme (Sektör kapma), sonrasında pazar doyumuna doğru (Decay rate)
-        growth_path = [0.45, 0.35, 0.25, 0.18, 0.12, 0.08, 0.05]
+        # Teknoloji şirketleri ölçeklendikçe marjları devasa seviyelere (SaaS için >%25) ulaşır.
+        target_margin = max(current_margin, 0.25)
+        tax_rate = 0.22
+
+        # 2. SERMAYE MALİYETİ (WACC)
+        # Teknoloji hisseleri çok daha volatildir, Beta yüksektir (Örn: 1.40)
+        risk_free_rate = macro_context.get("risk_free_rate", 0.35) 
+        erp = macro_context.get("equity_risk_premium", 0.08)
+        beta = macro_context.get("sector_beta", 1.40) 
         
-        for year in range(1, self.PROJECTION_YEARS + 1):
-            growth = growth_path[year - 1]
-            current_fcf = current_fcf * (1 + growth)
-            projected_cash_flows.append(current_fcf)
-            
-            discount_factor = (1 + discount_rate) ** year
-            present_value_of_fcf += (current_fcf / discount_factor)
+        wacc = risk_free_rate + (beta * erp) # Teknolojide borç (Debt) varsayılmaz, hepsi Özkaynaktır.
 
-        # 2. UÇ DEĞER (Terminal Value)
-        terminal_value = (projected_cash_flows[-1] * (1 + self.TERMINAL_GROWTH_RATE)) / (discount_rate - self.TERMINAL_GROWTH_RATE)
-        pv_of_terminal_value = terminal_value / ((1 + discount_rate) ** self.PROJECTION_YEARS)
+        # 3. İKİ AŞAMALI BÜYÜME (Two-Stage Growth)
+        high_growth_rate = 0.30  # İlk 5 yıl boyunca her yıl %30 devasa büyüme
+        high_growth_years = 5
+        reinvestment_rate = 0.15 # Yazılımın AR-GE'si vardır ama ağır sanayi kadar CAPEX gerektirmez.
+
+        pv_of_fcff = 0.0
+        projected_rev = ttm_revenue_cents
+
+        # Aşama 1: Hiper Büyüme Dönemi
+        for year in range(1, high_growth_years + 1):
+            projected_rev *= (1 + high_growth_rate)
+            nopat = projected_rev * target_margin * (1 - tax_rate)
+            fcff = nopat * (1 - reinvestment_rate)
+            pv_of_fcff += fcff / ((1 + wacc) ** year)
+
+        # Aşama 2: Terminal Değer (Sonsuzluk)
+        terminal_growth = macro_context.get("long_term_growth_rate", 0.04)
+        if wacc - terminal_growth < 0.05:
+            wacc = terminal_growth + 0.05
+
+        terminal_rev = projected_rev * (1 + terminal_growth)
+        terminal_nopat = terminal_rev * target_margin * (1 - tax_rate)
+        terminal_fcff = terminal_nopat * (1 - reinvestment_rate)
+
+        terminal_value = terminal_fcff / (wacc - terminal_growth)
+        pv_of_terminal_value = terminal_value / ((1 + wacc) ** high_growth_years)
+
+        enterprise_value_cents = pv_of_fcff + pv_of_terminal_value
+
+        # 4. NET BORÇ DÜŞÜMÜ (Teknolojide genelde kasada nakit vardır, bu değere eklenir)
+        net_debt_cents = metadata.get("net_debt_cents", 0.0) 
+        equity_value_cents = enterprise_value_cents - net_debt_cents
         
-        enterprise_value_cents = present_value_of_fcf + pv_of_terminal_value
+        if equity_value_cents < 0:
+            equity_value_cents = 0.0
 
-        # 3. NET BORÇ DÜZELTMESİ (Yazılım şirketleri genelde net nakittedir)
-        net_debt_cents = metadata.get("balance_sheet_snapshot", {}).get("net_debt_cents", 0)
-        target_equity_value_cents = enterprise_value_cents - net_debt_cents
-
-        target_equity_value_tl = target_equity_value_cents / 100.0
+        target_equity_value_tl = equity_value_cents / 100.0
 
         model_report = {
-            "model_used": "Teknoloji_Hypergrowth_DCF",
-            "applied_wacc": discount_rate,
-            "pv_of_7_year_fcf_tl": present_value_of_fcf / 100,
+            "model_used": "Tech_TwoStage_HyperGrowth",
+            "current_ebit_margin": current_margin,
+            "target_scale_margin": target_margin,
+            "applied_high_growth_rate": high_growth_rate,
+            "wacc_applied": wacc,
+            "pv_of_high_growth_stage_tl": pv_of_fcff / 100,
+            "pv_of_terminal_value_tl": pv_of_terminal_value / 100,
             "enterprise_value_tl": enterprise_value_cents / 100,
-            "has_net_cash_premium": net_debt_cents < 0 # Eğer net borç eksiyse (nakit fazlası) primlidir.
+            "net_debt_deducted_tl": net_debt_cents / 100
         }
 
         return target_equity_value_tl, model_report

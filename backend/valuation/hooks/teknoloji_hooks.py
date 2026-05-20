@@ -4,43 +4,75 @@ from typing import Dict, Any, Tuple
 logger = logging.getLogger(__name__)
 
 class TeknolojiHook:
+    """
+    TEKNOLOJİ PİYASA REJİMİ KANCASI
+    Yapay Zeka (AI) trendlerini ve büyüme hisselerinin korkulu rüyası olan
+    Faiz (Duration) şoklarını fiyatlar.
+    """
+
     @staticmethod
-    def apply_market_regime(base_intrinsic_value_tl: float, metadata: Dict[str, Any], macro_context: Dict[str, Any]) -> Tuple[float, Dict[str, Any]]:
-        ticker = metadata.get("ticker", "UNKNOWN")
-        logger.info(f"[{ticker}] Teknoloji Hook: Global Likidite ve AI Çarpanları taranıyor.")
+    def apply_market_regime(
+        base_intrinsic_value_tl: float, 
+        metadata: Dict[str, Any], 
+        macro_context: Dict[str, Any] 
+    ) -> Tuple[float, Dict[str, Any]]:
         
-        if base_intrinsic_value_tl <= 0: return base_intrinsic_value_tl, {}
+        ticker = metadata.get("ticker", "UNKNOWN")
+        logger.info(f"[{ticker}] Teknoloji Makro Hook devrede. Faiz hassasiyeti (Duration) ve Mega Trendler taranıyor.")
+        
+        if base_intrinsic_value_tl <= 0:
+            return base_intrinsic_value_tl, {"hook_status": "Bypassed"}
 
-        total_adjustment_pct = 0.0
-        hook_report = {"applied_adjustments": []}
+        adjusted_value = base_intrinsic_value_tl
+        hook_report = {
+            "applied_adjustments": [],
+            "total_value_impact_tl": 0.0
+        }
+        
+        total_tl_adjustment = 0.0
 
-        # KURAL 1: GLOBAL LİKİDİTE (NASDAQ & FED FAİZLERİ)
-        # Teknoloji şirketleri düşük faiz ortamını sever (Gelecekteki nakitleri değerlenir).
-        global_tech_liquidity = macro_context.get("global_tech_liquidity_environment", "neutral")
-        if global_tech_liquidity == "expansion":
-            premium = 0.15
-            total_adjustment_pct += premium
-            hook_report["applied_adjustments"].append({"factor": "Global Tech Rally / Low Yields", "impact_pct": premium * 100})
-        elif global_tech_liquidity == "tightening":
-            penalty = -0.15
-            total_adjustment_pct += penalty
-            hook_report["applied_adjustments"].append({"factor": "High Yield Tech Sell-off", "impact_pct": penalty * 100})
+        # KURAL 1: FAİZ VE SÜRE RİSKİ (Interest Rate & Duration Shock)
+        # Teknoloji şirketlerinin kazançları çok uzun vadelidir. Merkez bankası faiz artırırsa ağır darbe alırlar.
+        tcmb_policy_stance = macro_context.get("tcmb_rate_cycle", "neutral")
+        
+        if tcmb_policy_stance == "aggressive_hiking":
+            # Agresif faiz artışları teknoloji hisselerine acımaz. EV üzerinden %25 ağır iskonto.
+            duration_shock_tl = base_intrinsic_value_tl * 0.25 
+            total_tl_adjustment -= duration_shock_tl
+            hook_report["applied_adjustments"].append({
+                "factor": "Aggressive Rate Hikes (Duration Risk Shock)", 
+                "impact_tl": -duration_shock_tl,
+                "logic": "Yüksek faizler, uzaktaki kârların bugünkü değerini sert şekilde eritir (-%25 EV iskontosu)."
+            })
+        elif tcmb_policy_stance == "easing":
+            # Faizler düşerse piyasada para bollaşır, teknoloji ralli yapar.
+            duration_premium_tl = base_intrinsic_value_tl * 0.15
+            total_tl_adjustment += duration_premium_tl
+            hook_report["applied_adjustments"].append({
+                "factor": "Rate Easing Cycle (Duration Premium)", 
+                "impact_tl": duration_premium_tl,
+                "logic": "Faiz indirim döngüsü, büyüme hisselerinin çarpanlarını doğrudan genişletir (+%15 EV primi)."
+            })
 
-        # KURAL 2: YAPAY ZEKA VE R&D TEŞVİKLERİ (AI Hype Premium)
-        # Şirket spesifik metadata'sında "AI Exposure" varsa piyasa çılgın çarpanlar ödemeye razıdır.
-        is_ai_exposed = metadata.get("ai_revenue_exposure", False)
-        if is_ai_exposed:
-            premium = 0.20 # Yapay zeka köpüğü primi
-            total_adjustment_pct += premium
-            hook_report["applied_adjustments"].append({"factor": "Artificial Intelligence Hype Premium", "impact_pct": premium * 100})
+        # KURAL 2: YAPAY ZEKA VE DİJİTALLEŞME TRENDİ (AI Megatrend)
+        global_tech_sentiment = macro_context.get("global_tech_sentiment", "bullish")
+        
+        if global_tech_sentiment == "bullish":
+            ai_premium_tl = base_intrinsic_value_tl * 0.10
+            total_tl_adjustment += ai_premium_tl
+            hook_report["applied_adjustments"].append({
+                "factor": "AI & Digitalization Megatrend Premium", 
+                "impact_tl": ai_premium_tl,
+                "logic": "Yapay zeka devrimi sektöre ciddi bir hikaye (Narrative) primi sağlıyor (+%10 EV primi)."
+            })
 
-        # KURAL 3: KURUMSAL IT BÜTÇELERİ
-        # Eğer Türkiye'de resesyon varsa şirketler ilk olarak "Yeni yazılım alma" bütçelerini kısarlar.
-        corporate_capex_trend = macro_context.get("tr_corporate_capex_trend", "stable")
-        if corporate_capex_trend == "contraction":
-            penalty = -0.10
-            total_adjustment_pct += penalty
-            hook_report["applied_adjustments"].append({"factor": "Frozen Corporate IT Budgets", "impact_pct": penalty * 100})
+        adjusted_value = base_intrinsic_value_tl + total_tl_adjustment
+        
+        if adjusted_value < 0:
+            adjusted_value = 0.0
 
-        adjusted_value = base_intrinsic_value_tl * (1 + total_adjustment_pct)
+        hook_report["total_discount_or_premium_pct"] = round((total_tl_adjustment / base_intrinsic_value_tl) * 100, 2) if base_intrinsic_value_tl > 0 else 0
+        hook_report["original_model_value_tl"] = round(base_intrinsic_value_tl, 2)
+        hook_report["hook_adjusted_value_tl"] = round(adjusted_value, 2)
+
         return adjusted_value, hook_report

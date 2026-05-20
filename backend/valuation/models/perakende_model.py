@@ -1,20 +1,19 @@
-import logging
 import pandas as pd
 from typing import Dict, Any, Tuple
+import logging
+
 from valuation.models.base_model import BaseValuationModel
+from valuation.core_logic.taxonomy_registry import FinancialConcept, get_taxonomy_keys
+from valuation.bist_registry import FinancialGroupCode
 
 logger = logging.getLogger(__name__)
 
 class PerakendeModel(BaseValuationModel):
     """
-    PERAKENDE SEKTÖRÜ İZOLE MODELLİ (Örn: BIMAS, MGROS, SOKM)
-    'Stable Compounder' (Düzenli Büyüyen) arketipidir. Nakit döngüsü negatiftir 
-    (Tedarikçi finansmanı), bu yüzden FCF üretimi çok güçlüdür.
+    PERAKENDE / FMCG (GIDA PERAKENDESİ) MODELLİ
+    Düşük Kâr Marjı, Yüksek Hacim ve Negatif İşletme Sermayesi dinamikleri.
+    Yüksek nakit dönüşüm oranlı (Cash Conversion) DCF modeli uygulanır.
     """
-    
-    SECTOR_BETA = 0.85               # Defansif sektör. Endeksten daha az düşer/çıkar.
-    TERMINAL_GROWTH_RATE = 0.03      # Gıda enflasyonu ve nüfus artışı nedeniyle uzun vade büyümesi nispeten yüksektir.
-    PROJECTION_YEARS = 5
 
     def calculate_intrinsic_value(
         self, 
@@ -23,59 +22,80 @@ class PerakendeModel(BaseValuationModel):
     ) -> Tuple[float, Dict[str, Any]]:
         
         ticker = metadata.get("ticker", "UNKNOWN")
-        logger.info(f"[{ticker}] Perakende Stable Compounder DCF Modeli çalıştırılıyor.")
+        reporting_group = FinancialGroupCode.SANAYI
+        macro_context = metadata.get("macro_context", {})
         
-        if 'CALC_OWNERS_EARNINGS_TTM' not in df.index:
-            raise ValueError(f"[{ticker}] Patronun Nakdi (Owner's Earnings) eksik.")
+        logger.info(f"[{ticker}] Perakende Yüksek Nakit Dönüşüm (FCFF) Motoru çalıştırılıyor.")
+        
+        # 1. BİLANÇODAN GİRDİLERİN ÇEKİLMESİ
+        rev_keys = [k for k in get_taxonomy_keys(reporting_group, FinancialConcept.REVENUE) if k in df.index]
+        ebit_keys = [k for k in get_taxonomy_keys(reporting_group, FinancialConcept.EBIT) if k in df.index]
+        
+        if not rev_keys or not ebit_keys:
+            logger.error(f"[{ticker}] Değerleme için Ciro veya EBIT kalemi bulunamadı.")
+            return 0.0, {"warning": "Missing Core Data"}
             
-        base_fcf_cents = float(df.loc['CALC_OWNERS_EARNINGS_TTM'].iloc[-1])
+        ttm_revenue_cents = float(df.loc[rev_keys, df.columns[-4:]].sum().sum())
+        ttm_ebit_cents = float(df.loc[ebit_keys, df.columns[-4:]].sum().sum())
         
-        # Gıda perakendesinde negatif FCF çok nadirdir (Sıfırdan devasa yatırım yılı değilse)
-        if base_fcf_cents <= 0:
-            return 0.0, {"warning": "Negatif FCF. Model Zemin (Floor) korumasına devredilecek."}
+        if ttm_revenue_cents <= 0 or ttm_ebit_cents <= 0:
+            return 0.0, {"warning": "Zero or Negative Revenue/EBIT"}
 
-        # İskonto Oranı (WACC)
-        risk_free_rate = 0.35  
-        erp = 0.08             
-        discount_rate = self.calculate_wacc(risk_free_rate, self.SECTOR_BETA, erp)
-
-        # 1. DÜZENLİ BÜYÜME PROJEKSİYONU (Stable Compounding)
-        projected_cash_flows = []
-        current_fcf = base_fcf_cents
-        present_value_of_fcf = 0.0
+        # 2. DÜŞÜK MARJ VE YÜKSEK NAKİT DÖNÜŞÜMÜ (Cash Conversion)
+        current_ebit_margin = ttm_ebit_cents / ttm_revenue_cents
         
-        # Perakendede büyüme = (Beklenen Gıda Enflasyonu) + (Yeni Mağaza Açılış Hızı)
-        # Ağır sanayi gibi J-Curve yapmaz, düzenli bileşik getiri üretir.
-        growth_path = [0.35, 0.25, 0.15, 0.10, 0.08] # Yüksek enflasyondan normale dönüş senaryosu
+        # Perakendede normalize edilmiş marj genelde tarihsel marjın kendisine yakındır
+        # (Çelik gibi aşırı dalgalanmaz, çok stabildir).
+        tax_rate = 0.22
+        nopat = ttm_ebit_cents * (1 - tax_rate)
+
+        # Perakende Negatif İşletme Sermayesi ile çalışır.
+        # NOPAT'ın büyük kısmı Serbest Nakit Akışına (FCFF) dönüşür çünkü işletme sermayesi ihtiyacı yoktur (hatta nakit yaratır).
+        # Reinvestment Rate (Yeniden Yatırım Oranı) sadece yeni mağaza açılışları içindir (Görece düşüktür ~%25-30).
+        reinvestment_rate = 0.25 
+        fcff = nopat * (1 - reinvestment_rate)
+
+        # 3. AĞIRLIKLI ORTALAMA SERMAYE MALİYETİ (WACC) HESAPLAMASI
+        risk_free_rate = macro_context.get("risk_free_rate", 0.35) 
+        erp = macro_context.get("equity_risk_premium", 0.08)
         
-        for year in range(1, self.PROJECTION_YEARS + 1):
-            growth = growth_path[year - 1]
-            current_fcf = current_fcf * (1 + growth)
-            projected_cash_flows.append(current_fcf)
-            
-            discount_factor = (1 + discount_rate) ** year
-            present_value_of_fcf += (current_fcf / discount_factor)
-
-        # 2. UÇ DEĞER VE FİRMA DEĞERİ
-        terminal_value = (projected_cash_flows[-1] * (1 + self.TERMINAL_GROWTH_RATE)) / (discount_rate - self.TERMINAL_GROWTH_RATE)
-        pv_of_terminal_value = terminal_value / ((1 + discount_rate) ** self.PROJECTION_YEARS)
+        # Perakende defansiftir. İnsanlar krizde de yemek yemek zorundadır. Beta düşüktür (Örn: 0.85).
+        beta = macro_context.get("sector_beta", 0.85) 
         
-        enterprise_value_cents = present_value_of_fcf + pv_of_terminal_value
+        cost_of_equity = risk_free_rate + (beta * erp)
+        after_tax_cod = (risk_free_rate + 0.02) * (1 - tax_rate) 
+        
+        # Sermaye Yapısı: Çoğunluğu IFRS-16 kira yükümlülüklerinden oluşan borç (%40) ve Özkaynak (%60)
+        w_debt, w_equity = 0.40, 0.60
+        wacc = (w_equity * cost_of_equity) + (w_debt * after_tax_cod)
 
-        # 3. IFRS-16 KİRA YÜKÜMLÜLÜKLERİ İLE NET BORÇ DÜZELTMESİ
-        # Perakende şirketlerinin banka borcu azdır ama milyarlarca lira "Lease" borcu vardır. 
-        # debt_adjuster.py bunu zaten hesaplayıp snapshot içine koydu.
-        net_debt_cents = metadata.get("balance_sheet_snapshot", {}).get("net_debt_cents", 0)
-        target_equity_value_cents = enterprise_value_cents - net_debt_cents
+        # 4. BÜYÜME (Growth) ve FİRMA DEĞERİ (Enterprise Value)
+        # Perakendeciler enflasyon kadar doğal olarak büyür + nüfus artışı
+        terminal_growth = macro_context.get("long_term_growth_rate", 0.04)
+        
+        if wacc - terminal_growth < 0.05:
+            wacc = terminal_growth + 0.05
 
-        target_equity_value_tl = target_equity_value_cents / 100.0
+        enterprise_value_cents = (fcff * (1 + terminal_growth)) / (wacc - terminal_growth)
+
+        # 5. NET BORÇ DÜŞÜMÜ (Özkaynak Değerine Ulaşma)
+        net_debt_cents = metadata.get("net_debt_cents", 0.0) 
+        equity_value_cents = enterprise_value_cents - net_debt_cents
+        
+        if equity_value_cents < 0:
+            equity_value_cents = 0.0
+
+        target_equity_value_tl = equity_value_cents / 100.0
 
         model_report = {
-            "model_used": "Perakende_Stable_Compounder_DCF",
-            "applied_wacc": discount_rate,
-            "pv_of_fcf_tl": present_value_of_fcf / 100,
-            "ifrs_16_lease_debt_deducted": True, # Ajanların (LLM) bunu bilmesi çok kritik
+            "model_used": "Retail_Defensive_DCF",
+            "ttm_revenue_tl": ttm_revenue_cents / 100,
+            "current_ebit_margin": current_ebit_margin,
+            "cash_conversion_proxy_reinvestment": reinvestment_rate,
+            "estimated_fcff_tl": fcff / 100,
+            "wacc_applied": wacc,
             "enterprise_value_tl": enterprise_value_cents / 100,
+            "net_debt_deducted_tl": net_debt_cents / 100
         }
 
         return target_equity_value_tl, model_report
