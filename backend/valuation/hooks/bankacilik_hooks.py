@@ -5,8 +5,54 @@ logger = logging.getLogger(__name__)
 
 class BankacilikHook:
     """
-    BANKACILIK SEKTÖRÜ PİYASA REJİMİ KANCASI
+    BANKACILIK SEKTÖRÜ PİYASA REJİMİ VE RİSK KANCASI
     """
+
+    @staticmethod
+    def apply_sector_adjustments(financials: dict) -> dict:
+        """
+        Bankacılık sektörü için akıllı veri türetme ve risk motoru.
+        """
+        # 1. EKSİK VERİ TÜRETME (SMART IMPUTATION)
+        if financials.get("net_income") is None:
+            op_income = financials.get("operating_income", 0)
+            if op_income is not None and op_income > 0:
+                financials["net_income"] = op_income * 0.75
+                financials["imputed_net_income_flag"] = True
+
+        # 2. SEKTÖREL RİSK HESAPLAMA (Risk Engine)
+        risk_score = 5
+        risk_flags = []
+        
+        # Güvenli veri çekme
+        equity = financials.get("equity") or financials.get("total_equity")
+        total_assets = financials.get("total_assets")
+
+        # HATA DÜZELTME: None kontrolü ekledik
+        if equity is not None and total_assets is not None and total_assets > 0:
+            equity_to_assets = equity / total_assets
+            
+            # Artık None > 0 hatası almayacaksın çünkü yukarıda kontrol ettik
+            if equity_to_assets < 0.08:
+                risk_score = 8
+                risk_flags.append(f"Yüksek Kaldıraç Riski (Özkaynak/Varlık: %{equity_to_assets*100:.1f})")
+            elif equity_to_assets > 0.12:
+                risk_score = 3
+                risk_flags.append(f"Güçlü Sermaye Yapısı (Özkaynak/Varlık: %{equity_to_assets*100:.1f})")
+            else:
+                risk_score = 5
+                risk_flags.append(f"Stabil Sermaye Yeterliliği (Özkaynak/Varlık: %{equity_to_assets*100:.1f})")
+        else:
+            # Veri yoksa panikleme, 5 skorunu koru ve bilgi notu düş
+            risk_score = 5
+            risk_flags.append("Sermaye Yeterliliği verisi eksik, sektör ortalaması varsayıldı.")
+
+        risk_flags.append("Banka bilançoları regülatif kararlara (TCMB faiz, zorunlu karşılıklar) duyarlıdır.")
+
+        financials["sector_risk_score"] = risk_score
+        financials["sector_risk_flags"] = risk_flags
+
+        return financials
 
     @staticmethod
     def apply_market_regime(
@@ -45,8 +91,6 @@ class BankacilikHook:
 
         tcmb_policy_stance = macro_context.get("tcmb_rate_cycle", "neutral")
         
-        # Justified P/B modeline geçtiğimiz için pv_of_ri_tl artık yok, 
-        # iskontoyu doğrudan ana değer üzerinden simüle ediyoruz.
         if tcmb_policy_stance == "aggressive_hiking":
             nim_squeeze_tl = base_intrinsic_value_tl * 0.15
             total_tl_deduction -= nim_squeeze_tl
@@ -78,4 +122,5 @@ class BankacilikHook:
         hook_report["original_model_value_tl"] = round(base_intrinsic_value_tl, 2)
         hook_report["hook_adjusted_value_tl"] = round(adjusted_value, 2)
 
+        hook_report["hook_status"] = "OK"
         return adjusted_value, hook_report

@@ -5,10 +5,60 @@ logger = logging.getLogger(__name__)
 
 class TeknolojiHook:
     """
-    TEKNOLOJİ PİYASA REJİMİ KANCASI
-    Yapay Zeka (AI) trendlerini ve büyüme hisselerinin korkulu rüyası olan
-    Faiz (Duration) şoklarını fiyatlar.
+    TEKNOLOJİ PİYASA REJİMİ VE RİSK KANCASI
+    Yapay Zeka (AI) trendlerini ve büyüme hisselerinin faiz (Duration) hassasiyetini fiyatlar.
     """
+
+    @staticmethod
+    def apply_sector_adjustments(financials: dict) -> dict:
+        """
+        Teknoloji sektörü için akıllı veri türetme ve risk motoru.
+        Büyüme (Growth) odaklı oldukları için yüksek borç tolere edilmez.
+        """
+        # 1. EKSİK VERİ TÜRETME (SMART IMPUTATION)
+        if financials.get("ebitda") is None:
+            op_income = financials.get("operating_income", 0)
+            depreciation = financials.get("depreciation", 0)
+            if op_income > 0:
+                financials["ebitda"] = op_income + depreciation
+                financials["imputed_ebitda_flag"] = True
+
+        if financials.get("net_debt") is None:
+            total_debt = financials.get("totalDebt", financials.get("total_debt", 0))
+            cash = financials.get("totalCash", financials.get("total_cash", 0))
+            if total_debt > 0:
+                financials["net_debt"] = total_debt - cash
+
+        # 2. SEKTÖREL RİSK HESAPLAMA (Risk Engine)
+        risk_score = 5
+        risk_flags = []
+        
+        net_debt = financials.get("net_debt")
+        ebitda = financials.get("ebitda")
+
+        if net_debt is not None and ebitda is not None and ebitda > 0:
+            debt_to_ebitda = net_debt / ebitda
+            # Teknoloji şirketlerinde yatırımlar entelektüel sermayedir. Aşırı borçlanma iflas riskini artırır.
+            if debt_to_ebitda > 3.0:
+                risk_score = 8
+                risk_flags.append(f"Teknoloji (Büyüme) Hissesi İçin Yüksek Finansman Riski ({debt_to_ebitda:.1f}x)")
+            elif debt_to_ebitda < 1.0:
+                risk_score = 3
+                risk_flags.append(f"Net Nakit Pozisyonu veya Ar-Ge İçin Çok Güçlü Likidite ({debt_to_ebitda:.1f}x)")
+            else:
+                risk_score = 5
+                risk_flags.append(f"Yönetilebilir Bilanço Profili ({debt_to_ebitda:.1f}x)")
+        else:
+            risk_score = 6
+            risk_flags.append("Net Borç / FAVÖK verisine ulaşılamadı. Teknoloji hisselerinin yüksek 'Duration' (Faiz) hassasiyeti riski atandı.")
+
+        # Sektöre özel genel uyarılar
+        risk_flags.append("Teknoloji ve yazılım sektörü şirketleri uzak vadeli nakit akışlarına sahip oldukları için faiz artış döngülerinden en sert negatif darbeyi alırlar (Duration Risk).")
+
+        financials["sector_risk_score"] = risk_score
+        financials["sector_risk_flags"] = risk_flags
+
+        return financials
 
     @staticmethod
     def apply_market_regime(
@@ -32,11 +82,9 @@ class TeknolojiHook:
         total_tl_adjustment = 0.0
 
         # KURAL 1: FAİZ VE SÜRE RİSKİ (Interest Rate & Duration Shock)
-        # Teknoloji şirketlerinin kazançları çok uzun vadelidir. Merkez bankası faiz artırırsa ağır darbe alırlar.
         tcmb_policy_stance = macro_context.get("tcmb_rate_cycle", "neutral")
         
         if tcmb_policy_stance == "aggressive_hiking":
-            # Agresif faiz artışları teknoloji hisselerine acımaz. EV üzerinden %25 ağır iskonto.
             duration_shock_tl = base_intrinsic_value_tl * 0.25 
             total_tl_adjustment -= duration_shock_tl
             hook_report["applied_adjustments"].append({
@@ -45,7 +93,6 @@ class TeknolojiHook:
                 "logic": "Yüksek faizler, uzaktaki kârların bugünkü değerini sert şekilde eritir (-%25 EV iskontosu)."
             })
         elif tcmb_policy_stance == "easing":
-            # Faizler düşerse piyasada para bollaşır, teknoloji ralli yapar.
             duration_premium_tl = base_intrinsic_value_tl * 0.15
             total_tl_adjustment += duration_premium_tl
             hook_report["applied_adjustments"].append({
@@ -75,4 +122,7 @@ class TeknolojiHook:
         hook_report["original_model_value_tl"] = round(base_intrinsic_value_tl, 2)
         hook_report["hook_adjusted_value_tl"] = round(adjusted_value, 2)
 
+        hook_report["hook_status"] = "OK"  # <--- BÜTÜN DOSYALARA EKLE
+        hook_report["hook_adjusted_value_tl"] = round(adjusted_value, 2)
+        
         return adjusted_value, hook_report

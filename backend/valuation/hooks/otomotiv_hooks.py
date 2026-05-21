@@ -5,10 +5,60 @@ logger = logging.getLogger(__name__)
 
 class OtomotivHook:
     """
-    OTOMOTİV PİYASA REJİMİ KANCASI
-    Avrupa İhracat Pazarı (Eurozone PMI) ve Elektrikli Araç (EV) 
-    Dönüşüm CAPEX risklerini doğrudan Firma Değerine (EV) yansıtır.
+    OTOMOTİV PİYASA REJİMİ VE RİSK KANCASI
+    Avrupa İhracat Pazarı (Eurozone PMI) ve Elektrikli Araç (EV) CAPEX risklerini değerlendirir.
     """
+
+    @staticmethod
+    def apply_sector_adjustments(financials: dict) -> dict:
+        """
+        Otomotiv sektörü için akıllı veri türetme ve risk motoru.
+        Döngüsel şoklara karşı işletme sermayesi ve net borç eşikleri oldukça dardır.
+        """
+        # 1. EKSİK VERİ TÜRETME (SMART IMPUTATION)
+        if financials.get("ebitda") is None:
+            op_income = financials.get("operating_income", 0)
+            depreciation = financials.get("depreciation", 0)
+            if op_income > 0:
+                financials["ebitda"] = op_income + depreciation
+                financials["imputed_ebitda_flag"] = True
+
+        if financials.get("net_debt") is None:
+            total_debt = financials.get("totalDebt", financials.get("total_debt", 0))
+            cash = financials.get("totalCash", financials.get("total_cash", 0))
+            if total_debt > 0:
+                financials["net_debt"] = total_debt - cash
+
+        # 2. SEKTÖREL RİSK HESAPLAMA (Risk Engine)
+        risk_score = 5
+        risk_flags = []
+        
+        net_debt = financials.get("net_debt")
+        ebitda = financials.get("ebitda")
+
+        if net_debt is not None and ebitda is not None and ebitda > 0:
+            debt_to_ebitda = net_debt / ebitda
+            # Otomotiv resesyonda aniden nakit yakmaya başlar. Borçluluk tolere edilemez. Eşik: 3.0x
+            if debt_to_ebitda > 3.0:
+                risk_score = 8
+                risk_flags.append(f"Döngüsel Daralmalara Karşı Yüksek Borç Riski ({debt_to_ebitda:.1f}x)")
+            elif debt_to_ebitda < 1.0:
+                risk_score = 3
+                risk_flags.append(f"Resesyon Şoklarına Dayanıklı Çok Güçlü Bilanço ({debt_to_ebitda:.1f}x)")
+            else:
+                risk_score = 5
+                risk_flags.append(f"Otomotiv Sektörü İçin Ortalama Borç Yükü ({debt_to_ebitda:.1f}x)")
+        else:
+            risk_score = 6
+            risk_flags.append("Net Borç / FAVÖK verisine ulaşılamadı. Global resesyon riski eklendi.")
+
+        # Sektöre özel genel uyarılar
+        risk_flags.append("Otomotiv sektörü Avrupa (ihracat) pazarındaki daralmalara (PMI) ve Elektrikli Araç (EV) geçişinin yarattığı devasa yatırım yüküne duyarlıdır.")
+
+        financials["sector_risk_score"] = risk_score
+        financials["sector_risk_flags"] = risk_flags
+
+        return financials
 
     @staticmethod
     def apply_market_regime(
@@ -82,4 +132,7 @@ class OtomotivHook:
         hook_report["original_model_value_tl"] = round(base_intrinsic_value_tl, 2)
         hook_report["hook_adjusted_value_tl"] = round(adjusted_value, 2)
 
+        hook_report["hook_status"] = "OK"  # <--- BÜTÜN DOSYALARA EKLE
+        hook_report["hook_adjusted_value_tl"] = round(adjusted_value, 2)
+        
         return adjusted_value, hook_report

@@ -131,7 +131,7 @@ if run_button:
                     upside = quant.get("upside_potential_pct") or 0.0
 
                     # Başlığı tam ortaya alıyoruz
-                    st.markdown(f"<h3 style='text-align: center;'>{ticker_input} Finansal Check-up Özeti</h3>", unsafe_allow_html=True)
+                    st.markdown(f"<h3 style='text-align: center;'>{ticker_input} Finansal Özeti</h3>", unsafe_allow_html=True)
                     
                     # ==========================================
                     # LOGOYU SONUÇLARIN TEPESİNE ORTALAMA (Bir Tık Büyütüldü)

@@ -5,10 +5,60 @@ logger = logging.getLogger(__name__)
 
 class PerakendeHook:
     """
-    PERAKENDE PİYASA REJİMİ KANCASI
-    Asgari ücret (Personel Gideri) şoklarını ve enflasyonist 
-    ortamda ucuz marketlerin (Discount Retail) kazandığı defansif primi fiyatlar.
+    PERAKENDE PİYASA REJİMİ VE RİSK KANCASI
+    Asgari ücret şoklarını, Tüketici Güvenini ve Defansif Nakit Akışını değerlendirir.
     """
+
+    @staticmethod
+    def apply_sector_adjustments(financials: dict) -> dict:
+        """
+        Perakende sektörü için akıllı veri türetme ve risk motoru.
+        Düşük kâr marjı ancak yüksek ve sürekli nakit akışı dinamiklerine göre borç eşikleri belirlenmiştir.
+        """
+        # 1. EKSİK VERİ TÜRETME (SMART IMPUTATION)
+        if financials.get("ebitda") is None:
+            op_income = financials.get("operating_income", 0)
+            depreciation = financials.get("depreciation", 0)
+            if op_income > 0:
+                financials["ebitda"] = op_income + depreciation
+                financials["imputed_ebitda_flag"] = True
+
+        if financials.get("net_debt") is None:
+            total_debt = financials.get("totalDebt", financials.get("total_debt", 0))
+            cash = financials.get("totalCash", financials.get("total_cash", 0))
+            if total_debt > 0:
+                financials["net_debt"] = total_debt - cash
+
+        # 2. SEKTÖREL RİSK HESAPLAMA (Risk Engine)
+        risk_score = 5
+        risk_flags = []
+        
+        net_debt = financials.get("net_debt")
+        ebitda = financials.get("ebitda")
+
+        if net_debt is not None and ebitda is not None and ebitda > 0:
+            debt_to_ebitda = net_debt / ebitda
+            # Perakende defansiftir, her gün nakit kasa girişi vardır. Borçluluk toleransı görece rahattır.
+            if debt_to_ebitda > 3.5:
+                risk_score = 7
+                risk_flags.append(f"Düşük Kâr Marjlarına Kıyasla Yüksek Borçlanma ({debt_to_ebitda:.1f}x)")
+            elif debt_to_ebitda < 1.5:
+                risk_score = 3
+                risk_flags.append(f"Defansif Sektörde Çok Güçlü Nakit ve Sıfıra Yakın Finansman Riski ({debt_to_ebitda:.1f}x)")
+            else:
+                risk_score = 4
+                risk_flags.append(f"Sağlıklı FMCG / Perakende Borç Profili ({debt_to_ebitda:.1f}x)")
+        else:
+            risk_score = 5
+            risk_flags.append("Net Borç / FAVÖK verisine ulaşılamadı. Perakende sektörü defansif varsayımı uygulandı.")
+
+        # Sektöre özel genel uyarılar
+        risk_flags.append("Perakende sektörü nakit zenginidir ancak kâr marjları çok incedir; asgari ücret artışlarına ve regülatif tavan fiyat baskılarına duyarlıdır.")
+
+        financials["sector_risk_score"] = risk_score
+        financials["sector_risk_flags"] = risk_flags
+
+        return financials
 
     @staticmethod
     def apply_market_regime(
@@ -35,11 +85,9 @@ class PerakendeHook:
         total_tl_adjustment = 0.0
 
         # KURAL 1: ASGARİ ÜCRET ŞOKU (Labor Cost Squeeze)
-        # Perakendenin en büyük masrafı on binlerce çalışanının maaşıdır. Sert asgari ücret artışları kâr marjını ezer.
         wage_inflation_trend = macro_context.get("wage_inflation", "aggressive")
         
         if wage_inflation_trend == "aggressive":
-            # Agresif maaş artışları, zaten %5 olan dar kâr marjını %4'e iter. EV üzerinden %10 iskonto.
             labor_shock_tl = enterprise_value_tl * 0.10 
             total_tl_adjustment -= labor_shock_tl
             hook_report["applied_adjustments"].append({
@@ -49,11 +97,9 @@ class PerakendeHook:
             })
 
         # KURAL 2: TÜKETİCİ GÜVENİ VE DEFANSİF PRİM (Defensive Premium in Contraction)
-        # Ekonomi kötüye gittiğinde (Resesyon/Kriz), insanlar AVM'den alışverişi keser ama yemeği BİM/A101/Şok'tan almaya başlar (Trade-down).
         consumer_confidence = macro_context.get("consumer_confidence", "contraction")
         
         if consumer_confidence == "contraction":
-            # Kriz zamanında gıda perakendesi "Güvenli Liman" olarak görülür ve premium ile fiyatlanır.
             defensive_premium_tl = enterprise_value_tl * 0.15
             total_tl_adjustment += defensive_premium_tl
             hook_report["applied_adjustments"].append({
@@ -64,7 +110,6 @@ class PerakendeHook:
 
         adjusted_value = base_intrinsic_value_tl + total_tl_adjustment
         
-        # Son Koruma: Hisse değeri sıfırın altına inemez
         if adjusted_value < 0:
             adjusted_value = 0.0
 
@@ -72,4 +117,7 @@ class PerakendeHook:
         hook_report["original_model_value_tl"] = round(base_intrinsic_value_tl, 2)
         hook_report["hook_adjusted_value_tl"] = round(adjusted_value, 2)
 
+        hook_report["hook_status"] = "OK"  # <--- BÜTÜN DOSYALARA EKLE
+        hook_report["hook_adjusted_value_tl"] = round(adjusted_value, 2)
+        
         return adjusted_value, hook_report

@@ -138,6 +138,7 @@ class BistRegistryService:
         "TUPRS": TickerConfig(ticker="TUPRS", sector=SectorType.PETROKIMYA, archetype=CompanyArchetype.CYCLICAL, reporting_template=ReportingTemplate.SANAYI),
         "PETKM": TickerConfig(ticker="PETKM", sector=SectorType.PETROKIMYA, archetype=CompanyArchetype.CYCLICAL, reporting_template=ReportingTemplate.SANAYI, currency=CurrencyType.USD),
         "SASA": TickerConfig(ticker="SASA", sector=SectorType.PETROKIMYA, archetype=CompanyArchetype.CAPACITY_GROWTH, reporting_template=ReportingTemplate.SANAYI),
+        "AKSA": TickerConfig(ticker="AKSA", sector=SectorType.PETROKIMYA, archetype=CompanyArchetype.COMPOUNDER, reporting_template=ReportingTemplate.SANAYI),
 
         # --- İÇECEK & GIDA ---
         "CCOLA": TickerConfig(ticker="CCOLA", sector=SectorType.ICECEK, archetype=CompanyArchetype.CONSUMER_STAPLES, reporting_template=ReportingTemplate.SANAYI),
@@ -156,6 +157,7 @@ class BistRegistryService:
         "ALFAS": TickerConfig(ticker="ALFAS", sector=SectorType.ENERJI, archetype=CompanyArchetype.CAPACITY_GROWTH, reporting_template=ReportingTemplate.SANAYI),
         "GWIND": TickerConfig(ticker="GWIND", sector=SectorType.ENERJI, archetype=CompanyArchetype.REGULATED_YIELD, reporting_template=ReportingTemplate.SANAYI),
         "ZOREN": TickerConfig(ticker="ZOREN", sector=SectorType.ENERJI, archetype=CompanyArchetype.CAPACITY_GROWTH, reporting_template=ReportingTemplate.SANAYI),
+        "AKSEN": TickerConfig(ticker="AKSEN", sector=SectorType.ENERJI, archetype=CompanyArchetype.CAPACITY_GROWTH, reporting_template=ReportingTemplate.SANAYI),
 
         # --- SAVUNMA & TEKNOLOJİ ---
         "ASELS": TickerConfig(ticker="ASELS", sector=SectorType.SAVUNMA, archetype=CompanyArchetype.BACKLOG_DRIVEN, reporting_template=ReportingTemplate.SANAYI),

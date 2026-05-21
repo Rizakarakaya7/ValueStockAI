@@ -1,3 +1,5 @@
+# orchestrator.py
+
 import asyncio
 import logging
 import time
@@ -185,14 +187,12 @@ class ValuationOrchestrator:
         intrinsic_value, report = model.calculate_intrinsic_value(ctx.df, ctx.metadata)
         
         # --- DİNAMİK SOTP (SUM OF THE PARTS) KONTROLÜ ---
-        # Sisteme dahil olan şirketin arketipi 'Operational_Holding' ise ve alt iştirakleri haritada belirtilmişse:
         if ctx.config.archetype.value == "Operational_Holding" and ctx.config.child_stakes:
             logger.info(f"[{ctx.ticker}] Dinamik SOTP (Parçaların Toplamı) Motoru devreye giriyor...")
             try:
                 total_subsidiary_value = 0.0
                 sotp_details = {}
                 
-                # BİST Haritasından çekilen tüm iştirakleri tek tek dönüp güncel değerlerini alıyoruz
                 for child_ticker, stake in ctx.config.child_stakes.items():
                     child_data = await self.yf_engine.fetch_all_data_async(child_ticker)
                     market_data = child_data.get("market_data", {})
@@ -212,9 +212,7 @@ class ValuationOrchestrator:
                         logger.warning(f"[{ctx.ticker}] SOTP Atlandı: {child_ticker} piyasa değeri hesaplanamadı!")
 
                 if total_subsidiary_value > 0:
-                    # Kendi ana operasyonları için holding değerine %25 prim uygulanır
                     sotp_value_tl = total_subsidiary_value * 1.25
-                    
                     logger.info(f"[{ctx.ticker}] Dinamik SOTP Başarılı! İştirakler Toplamı: {total_subsidiary_value} TL, SOTP Değeri: {sotp_value_tl} TL")
                     
                     intrinsic_value = sotp_value_tl
@@ -242,18 +240,32 @@ class ValuationOrchestrator:
         ctx.metadata["model_report"] = report
 
     async def _step_apply_hooks(self, ctx: PipelineContext):
-        # Kancalar (Hooks) temiz ve aracısız şekilde çalıştırılır, muafiyetler Hook'un içindedir.
         hook_class = self.hook_dispatcher.get_hook(ctx.config.sector)
         macro_data = ctx.metadata.get("macro_context", {})
         
-        adjusted_value, hook_report = hook_class.apply_market_regime(
-            base_intrinsic_value_tl=ctx.metadata.get("base_intrinsic_value", 0.0),
-            metadata=ctx.metadata,
-            macro_context=macro_data
-        )
-        ctx.metadata["final_intrinsic_value"] = adjusted_value
-        ctx.metadata["hook_adjustments"] = hook_report
+        try:
+            # 1. Aşama: Sektörel Risk ve Veri Türetme (Adım 1'deki yapı)
+            if hasattr(hook_class, "apply_sector_adjustments"):
+                ctx.metadata = hook_class.apply_sector_adjustments(ctx.metadata)
+            
+            # 2. Aşama: Makro Rejim (Adım 2'deki yapı)
+            adjusted_value, hook_report = hook_class.apply_market_regime(
+                base_intrinsic_value_tl=ctx.metadata.get("base_intrinsic_value", 0.0),
+                metadata=ctx.metadata,
+                macro_context=macro_data
+            )
+            
+            # KONTROL: Hook başarılı mı?
+            if hook_report.get("hook_status") == "OK":
+                ctx.metadata["final_intrinsic_value"] = adjusted_value
+                ctx.metadata["hook_adjustments"] = hook_report
+            else:
+                raise Exception(f"Hook başarısız: {hook_report.get('hook_status')}")
 
+        except Exception as e:
+            logger.error(f"[{ctx.ticker}] Hook uygulaması çöktü: {e}")
+            ctx.metadata["final_intrinsic_value"] = ctx.metadata.get("base_intrinsic_value", 0.0)
+            ctx.metadata["hook_adjustments"] = {"status": "FAILED", "error": str(e)}
     def _sanitize_for_json(self, obj: Any) -> Any:
         if isinstance(obj, dict):
             return {
@@ -301,6 +313,13 @@ class ValuationOrchestrator:
             "intrinsic_company_value": final_company_value,
             "intrinsic_price_per_share": intrinsic_price_per_share,
             "upside_potential_pct": upside_pct,
+            
+            # --- 2. ADIM: AJANLAR İÇİN HAYATİ METRİKLERİ EN ÜSTE TAŞIDIK ---
+            "ebitda": ctx.metadata.get("ebitda"),
+            "net_debt": ctx.metadata.get("net_debt"),
+            "sector_risk_score": ctx.metadata.get("sector_risk_score", 5),
+            "sector_risk_flags": ctx.metadata.get("sector_risk_flags", []),
+            
             "valuation_metadata": sanitized_metadata,
             "telemetry": ctx.telemetry
         }

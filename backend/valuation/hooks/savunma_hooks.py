@@ -5,10 +5,60 @@ logger = logging.getLogger(__name__)
 
 class SavunmaHook:
     """
-    SAVUNMA SANAYİ PİYASA REJİMİ KANCASI
-    Devlet bütçe açıklarını (Tahsilat Gecikmesi), Jeopolitik Gerilimleri, 
-    Döviz (Kur) Avantajını ve İhracat/Ambargo risklerini modele uygular.
+    SAVUNMA SANAYİ PİYASA REJİMİ VE RİSK KANCASI
+    Devlet bütçe açıklarını (Tahsilat Gecikmesi), Jeopolitik Gerilimleri ve FX (Kur) Avantajını fiyatlar.
     """
+
+    @staticmethod
+    def apply_sector_adjustments(financials: dict) -> dict:
+        """
+        Savunma sektörü için akıllı veri türetme ve risk motoru.
+        Müşteri genellikle devlet (SSB) olduğu için tahsilat süreleri çok uzundur, borçluluk toleransı geniştir.
+        """
+        # 1. EKSİK VERİ TÜRETME (SMART IMPUTATION)
+        if financials.get("ebitda") is None:
+            op_income = financials.get("operating_income", 0)
+            depreciation = financials.get("depreciation", 0)
+            if op_income > 0:
+                financials["ebitda"] = op_income + depreciation
+                financials["imputed_ebitda_flag"] = True
+
+        if financials.get("net_debt") is None:
+            total_debt = financials.get("totalDebt", financials.get("total_debt", 0))
+            cash = financials.get("totalCash", financials.get("total_cash", 0))
+            if total_debt > 0:
+                financials["net_debt"] = total_debt - cash
+
+        # 2. SEKTÖREL RİSK HESAPLAMA (Risk Engine)
+        risk_score = 5
+        risk_flags = []
+        
+        net_debt = financials.get("net_debt")
+        ebitda = financials.get("ebitda")
+
+        if net_debt is not None and ebitda is not None and ebitda > 0:
+            debt_to_ebitda = net_debt / ebitda
+            # Savunma şirketleri devasa Ar-Ge ve işletme sermayesi (alacak) taşır. 4.0x'e kadar makul görülür.
+            if debt_to_ebitda > 4.5:
+                risk_score = 8
+                risk_flags.append(f"Ağır İşletme Sermayesi ve Finansman Yükü ({debt_to_ebitda:.1f}x)")
+            elif debt_to_ebitda < 2.0:
+                risk_score = 3
+                risk_flags.append(f"Devlet Taahhütlerine Rağmen Çok Güçlü Likidite ({debt_to_ebitda:.1f}x)")
+            else:
+                risk_score = 5
+                risk_flags.append(f"Sektör Dinamiklerine Uygun Borçluluk ({debt_to_ebitda:.1f}x)")
+        else:
+            risk_score = 6
+            risk_flags.append("Net Borç / FAVÖK verisine ulaşılamadı. Savunma sektörü bütçe riski uygulandı.")
+
+        # Sektöre özel genel uyarılar
+        risk_flags.append("Savunma sanayi şirketleri uzun tahsilat vadeleri nedeniyle 'İşletme Sermayesi' baskısı yaşayabilir, ancak yabancı para cinsi (FX) bakiye siparişleri kur krizlerinde kalkan görevi görür.")
+
+        financials["sector_risk_score"] = risk_score
+        financials["sector_risk_flags"] = risk_flags
+
+        return financials
 
     @staticmethod
     def apply_market_regime(
@@ -56,8 +106,6 @@ class SavunmaHook:
             })
 
         # KURAL 4: DÖVİZ (FX) POZİSYON AVANTAJI
-        # Savunma şirketlerinin Backlog'u (siparişleri) genellikle Yabancı Para (Dolar/Euro) cinsindendir.
-        # TL'deki değer kaybı kâr marjlarını kağıt üzerinde muazzam artırır.
         fx_trend = macro_context.get("try_annual_depreciation_forecast", 25.0)
         if fx_trend > 40.0:
             premium = 0.10
@@ -66,7 +114,6 @@ class SavunmaHook:
                 "factor": "Strong FX Advantage on Foreign Currency Backlog", "impact_pct": premium * 100
             })
 
-        # CLAMPING: Kümülatif şokun ekstrem sonuçlar doğurmasını engellemek için -%25 ile +%30 arası limit.
         total_adjustment_pct = max(-0.25, min(0.30, total_adjustment_pct))
         
         adjusted_value = base_intrinsic_value_tl * (1 + total_adjustment_pct)
@@ -75,4 +122,7 @@ class SavunmaHook:
         hook_report["original_model_value_tl"] = round(base_intrinsic_value_tl, 2)
         hook_report["hook_adjusted_value_tl"] = round(adjusted_value, 2)
 
+        hook_report["hook_status"] = "OK"  # <--- BÜTÜN DOSYALARA EKLE
+        hook_report["hook_adjusted_value_tl"] = round(adjusted_value, 2)
+        
         return adjusted_value, hook_report

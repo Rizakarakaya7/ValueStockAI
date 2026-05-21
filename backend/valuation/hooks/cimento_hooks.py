@@ -5,10 +5,58 @@ logger = logging.getLogger(__name__)
 
 class CimentoHook:
     """
-    ÇİMENTO SEKTÖRÜ PİYASA REJİMİ KANCASI
-    Enerji maliyetlerini (Petrokok/Kömür), İnşaat Sektörü Güven Endeksini,
-    Kentsel Dönüşüm primlerini ve AB Karbon Vergisi (CBAM) risklerini yönetir.
+    ÇİMENTO SEKTÖRÜ PİYASA REJİMİ VE RİSK KANCASI
+    Enerji maliyetlerini, İnşaat Sektörü Güven Endeksini, Kentsel Dönüşüm primlerini yönetir.
     """
+
+    @staticmethod
+    def apply_sector_adjustments(financials: dict) -> dict:
+        """
+        Çimento sektörü için akıllı veri türetme ve risk motoru.
+        """
+        # 1. EKSİK VERİ TÜRETME (SMART IMPUTATION)
+        # Eğer EBITDA eksikse (Faaliyet Karı + Amortisman)
+        if financials.get("ebitda") is None:
+            op_income = financials.get("operating_income", 0)
+            depreciation = financials.get("depreciation", 0)
+            if op_income > 0:
+                financials["ebitda"] = op_income + depreciation
+                financials["imputed_ebitda_flag"] = True
+
+        # Eğer Net Borç eksikse (Toplam Borç - Nakit)
+        if financials.get("net_debt") is None:
+            total_debt = financials.get("totalDebt", financials.get("total_debt", 0))
+            cash = financials.get("totalCash", financials.get("total_cash", 0))
+            if total_debt > 0:
+                financials["net_debt"] = total_debt - cash
+
+        # 2. SEKTÖREL RİSK HESAPLAMA (Risk Engine)
+        risk_score = 5
+        risk_flags = []
+        
+        net_debt = financials.get("net_debt")
+        ebitda = financials.get("ebitda")
+
+        if net_debt is not None and ebitda is not None and ebitda > 0:
+            debt_to_ebitda = net_debt / ebitda
+            # Çimento yüksek yatırım gerektiren bir alandır, borçluluk eşiklerini buna göre esnetiyoruz.
+            if debt_to_ebitda > 4.0:
+                risk_score = 8
+                risk_flags.append(f"Yüksek Borçluluk ve Finansman Yükü Riski ({debt_to_ebitda:.1f}x)")
+            elif debt_to_ebitda < 2.0:
+                risk_score = 3
+                risk_flags.append(f"Güçlü Bilanço ve Yüksek Nakit Yaratma Kapasitesi ({debt_to_ebitda:.1f}x)")
+        else:
+            risk_score = 6
+            risk_flags.append("Net Borç / FAVÖK verisine ulaşılamadı. Döngüsel inşaat sektörü varsayılan riski uygulandı.")
+
+        # Çimentoya özel genel uyarı
+        risk_flags.append("Sektör kar marjları, enerji maliyetleri (kömür/petrokok) ve CBAM (Karbon Vergisi) gibi dış şoklara yüksek duyarlılık taşır.")
+
+        financials["sector_risk_score"] = risk_score
+        financials["sector_risk_flags"] = risk_flags
+
+        return financials
 
     @staticmethod
     def apply_market_regime(
@@ -60,33 +108,33 @@ class CimentoHook:
                 "factor": "Mega Infrastructure / Urban Rebuild Premium", "impact_pct": premium * 100
             })
 
-        # KURAL 4: AB SINIRDA KARBON DÜZENLEMESİ (CBAM) VE YEŞİL TRANSİSYON
-        # Alternatif yakıt kullanımı yüksek ve klinker oranını düşüren yeşil şirketler (Örn: CIMSA) 
-        # koruma kazanırken, dönüşümü yapamayanlar ceza yer.
+        # KURAL 4: AB SINIRDA KAR बुन्देलMASI (CBAM) VE YEŞİL TRANSİSYON
         green_transition_status = metadata.get("esg_metrics", {}).get("cement_green_fuel_ratio", "low").lower()
         cbam_risk_active = macro_context.get("eu_cbam_pressure_active", True)
         
         if cbam_risk_active:
             if green_transition_status == "high":
-                premium = 0.08  # Yeşil ihracat avantajı primi
+                premium = 0.08  
                 total_adjustment_pct += premium
                 hook_report["applied_adjustments"].append({
                     "factor": "EU CBAM Readiness & High Alternative Fuel Usage", "impact_pct": premium * 100
                 })
             elif green_transition_status == "low":
-                penalty = -0.12 # Karbon vergisi cezası riski
+                penalty = -0.12 
                 total_adjustment_pct += penalty
                 hook_report["applied_adjustments"].append({
                     "factor": "High Carbon Emission Exposure (EU Export Risk)", "impact_pct": penalty * 100
                 })
 
-        # Sınırlandırma (Clamping) Koruması: Çimento döngülerinde şokların kümülatif etkisi maks -%35, +%25 olabilir.
         total_adjustment_pct = max(-0.35, min(0.25, total_adjustment_pct))
         
         adjusted_value = base_intrinsic_value_tl * (1 + total_adjustment_pct)
         
         hook_report["total_discount_or_premium_pct"] = round(total_adjustment_pct * 100, 2)
         hook_report["original_model_value_tl"] = round(base_intrinsic_value_tl, 2)
+        hook_report["hook_adjusted_value_tl"] = round(adjusted_value, 2)
+        
+        hook_report["hook_status"] = "OK"  # <--- BÜTÜN DOSYALARA EKLE
         hook_report["hook_adjusted_value_tl"] = round(adjusted_value, 2)
         
         return adjusted_value, hook_report
