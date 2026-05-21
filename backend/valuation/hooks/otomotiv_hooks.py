@@ -5,9 +5,9 @@ logger = logging.getLogger(__name__)
 
 class OtomotivHook:
     """
-    OTOMOTİV SEKTÖRÜ PİYASA REJİMİ KANCASI
-    Şirketin DCF fiyatını; Avrupa Birliği (ACEA) yeni araç kayıtları, 
-    Yurt içi taşıt kredisi faizleri ve EUR/USD paritesiyle yüzleştirir.
+    OTOMOTİV PİYASA REJİMİ KANCASI
+    Avrupa İhracat Pazarı (Eurozone PMI) ve Elektrikli Araç (EV) 
+    Dönüşüm CAPEX risklerini doğrudan Firma Değerine (EV) yansıtır.
     """
 
     @staticmethod
@@ -18,71 +18,68 @@ class OtomotivHook:
     ) -> Tuple[float, Dict[str, Any]]:
         
         ticker = metadata.get("ticker", "UNKNOWN")
-        logger.info(f"[{ticker}] Otomotiv Makro Hook devrede. İhracat ve İç Pazar taranıyor.")
+        logger.info(f"[{ticker}] Otomotiv Makro Hook devrede. Avrupa İhracat Pazarı ve EV Şokları taranıyor.")
         
         if base_intrinsic_value_tl <= 0:
-            return base_intrinsic_value_tl, {"hook_status": "Bypassed due to floor limits"}
+            return base_intrinsic_value_tl, {"hook_status": "Bypassed"}
 
         adjusted_value = base_intrinsic_value_tl
+        model_report = metadata.get("model_report", {})
+        enterprise_value_tl = model_report.get("enterprise_value_tl", base_intrinsic_value_tl)
+        
         hook_report = {
             "applied_adjustments": [],
-            "total_discount_or_premium_pct": 0.0
+            "total_value_impact_tl": 0.0
         }
         
-        total_adjustment_pct = 0.0
+        total_tl_adjustment = 0.0
 
-        # Şirketin Metadata'sından ihracat ağırlığını çekiyoruz.
-        # FROTO ihracatçıdır (Avrupa verisi ağır basar), DOAS ithalatçı/iç pazarcıdır (Faiz ağır basar).
-        is_export_heavy = metadata.get("export_heavy", False)
-
-        # KURAL 1: AVRUPA ARAÇ PAZARI (ACEA Registration Data)
-        # BİST Otomotivinin can damarı Avrupa ticari araç pazarıdır.
-        eu_auto_market_trend = macro_context.get("eu_auto_market", "stable")
+        # KURAL 1: AVRUPA İHRACAT PAZARI (Eurozone PMI)
+        eurozone_demand = macro_context.get("eurozone_pmi", "contraction")
         
-        if is_export_heavy:
-            if eu_auto_market_trend == "contraction":
-                penalty = -0.12 # Avrupa daralıyorsa ihracatçı firmayı sert cezalandır
-                total_adjustment_pct += penalty
-                hook_report["applied_adjustments"].append({
-                    "factor": "EU Auto Market Contraction", "impact_pct": penalty * 100
-                })
-            elif eu_auto_market_trend == "expansion":
-                premium = 0.08
-                total_adjustment_pct += premium
-                hook_report["applied_adjustments"].append({
-                    "factor": "Strong EU Export Demand", "impact_pct": premium * 100
-                })
-
-        # KURAL 2: İÇ PİYASA TAŞIT KREDİSİ FAİZLERİ (TCMB)
-        # İç pazarda araç satışının %70'i krediyle yapılır. Kredi faizi yüksekse pazar donar.
-        domestic_auto_loan_rate = macro_context.get("tr_auto_loan_rate_annual", 40.0)
-        
-        if domestic_auto_loan_rate > 55.0:
-            # Faizler ulaşılamaz seviyede. İç pazar şirketi için ölümcül, ihracatçı için can sıkıcı.
-            penalty = -0.05 if is_export_heavy else -0.15
-            total_adjustment_pct += penalty
+        if eurozone_demand == "contraction":
+            export_shock_tl = enterprise_value_tl * 0.15 
+            total_tl_adjustment -= export_shock_tl
             hook_report["applied_adjustments"].append({
-                "factor": "Prohibitive Domestic Loan Rates", "impact_pct": penalty * 100
+                "factor": "Eurozone Recession (Export Demand Shock)", 
+                "impact_tl": -export_shock_tl,
+                "logic": "Ana ihracat pazarı olan Avrupa'daki daralma nedeniyle EV'den %15 iskonto."
             })
-            
-        # KURAL 3: EUR/USD PARİTESİ (Kur Makası)
-        # Şirketler maliyeti TL/USD, satışı EUR ile yapar. Euro zayıflarsa (Parite düşerse) kâr marjı erir.
-        eur_usd_parity = macro_context.get("eur_usd_parity", 1.08)
-        
-        if is_export_heavy and eur_usd_parity < 1.03:
-            penalty = -0.05
-            total_adjustment_pct += penalty
+        elif eurozone_demand == "expansion":
+            export_premium_tl = enterprise_value_tl * 0.10
+            total_tl_adjustment += export_premium_tl
             hook_report["applied_adjustments"].append({
-                "factor": "Weak EUR/USD Parity Margin Squeeze", "impact_pct": penalty * 100
+                "factor": "Eurozone Expansion (Export Boom)", 
+                "impact_tl": export_premium_tl,
+                "logic": "Avrupa pazarındaki güçlü talep nedeniyle EV'ye %10 kapasite artış primi."
             })
 
-        # NİHAİ UYGULAMA
-        adjusted_value = base_intrinsic_value_tl * (1 + total_adjustment_pct)
+        # KURAL 2: ELEKTRİKLİ ARAÇ (EV) DÖNÜŞÜM RİSKİ
+        ev_transition_risk = macro_context.get("ev_capex_risk", "high")
         
-        hook_report["total_discount_or_premium_pct"] = round(total_adjustment_pct * 100, 2)
+        if ev_transition_risk == "high":
+            ev_capex_shock_tl = enterprise_value_tl * 0.10
+            total_tl_adjustment -= ev_capex_shock_tl
+            hook_report["applied_adjustments"].append({
+                "factor": "EV Transition Heavy CAPEX Shock", 
+                "impact_tl": -ev_capex_shock_tl,
+                "logic": "Elektrikli araca geçiş sürecinin yaratacağı NAKİT YAKIMI (-%10 EV iskontosu)."
+            })
+
+        adjusted_value = base_intrinsic_value_tl + total_tl_adjustment
+        
+        book_value_cents = metadata.get("valuation_safeguards", {}).get("book_value_floor_cents", 0)
+        absolute_floor_tl = (book_value_cents / 100.0) * 0.80
+        
+        if adjusted_value < absolute_floor_tl and absolute_floor_tl > 0:
+            adjusted_value = absolute_floor_tl
+            hook_report["applied_adjustments"].append({
+                "factor": "Asset Value Floor (P/B 0.80)",
+                "logic": "Şoklar şirketi aşırı ucuzlattı, değerleme fabrika/makine asgari değerine (0.80x P/B) sabitlendi."
+            })
+
+        hook_report["total_discount_or_premium_pct"] = round((total_tl_adjustment / base_intrinsic_value_tl) * 100, 2) if base_intrinsic_value_tl > 0 else 0
         hook_report["original_model_value_tl"] = round(base_intrinsic_value_tl, 2)
         hook_report["hook_adjusted_value_tl"] = round(adjusted_value, 2)
-        
-        logger.info(f"[{ticker}] Hook Etkisi: % {total_adjustment_pct*100:.2f} | Eski: {base_intrinsic_value_tl:.2f} -> Yeni: {adjusted_value:.2f}")
 
         return adjusted_value, hook_report

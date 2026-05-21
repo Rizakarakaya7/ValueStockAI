@@ -6,7 +6,7 @@ logger = logging.getLogger(__name__)
 class EnerjiHook:
     """
     ENERJİ SEKTÖRÜ PİYASA REJİMİ KANCASI
-    Enerji Piyasası Düzenleme Kurumu (EPDK) tavan fiyatlarını, Yenilenebilir (YEKDEM) 
+    Enerji Piyasası Düzenleme Kurumu (EPDK) tavan fiyatlarını (AUF), Yenilenebilir (YEKDEM) 
     döviz garantilerini ve Spot Elektrik (PTF) fiyatlarını modele uygular.
     """
 
@@ -18,66 +18,65 @@ class EnerjiHook:
     ) -> Tuple[float, Dict[str, Any]]:
         
         ticker = metadata.get("ticker", "UNKNOWN")
-        logger.info(f"[{ticker}] Enerji Makro Hook devrede. PTF, AUF ve İklim Şartları taranıyor.")
+        logger.info(f"[{ticker}] Enerji Makro Hook devrede. PTF, AUF ve YEKDEM riskleri taranıyor.")
         
         if base_intrinsic_value_tl <= 0:
-            return base_intrinsic_value_tl, {"hook_status": "Bypassed"}
+            return base_intrinsic_value_tl, {"hook_status": "Bypassed due to base value <= 0"}
 
-        adjusted_value = base_intrinsic_value_tl
-        hook_report = {
-            "applied_adjustments": [],
-            "total_discount_or_premium_pct": 0.0
-        }
-        
+        hook_report = {"applied_adjustments": []}
         total_adjustment_pct = 0.0
 
         # KURAL 1: REGÜLASYON TAVANI (AUF - Azami Uzlaştırma Fiyatı)
-        # Spot elektrik fiyatları uçtuğunda devlet tavan fiyat koyar. Şirket kâr ralli şansını kaybeder.
-        epdk_auf_pressure = macro_context.get("epdk_price_cap_pressure", "low")
-        
+        epdk_auf_pressure = macro_context.get("epdk_price_cap_pressure", "low").lower()
         if epdk_auf_pressure == "high":
-            penalty = -0.15 # Şirketin ürettiği kâr devlete/halka sübvansiyon olarak gidiyor.
+            penalty = -0.15 
             total_adjustment_pct += penalty
             hook_report["applied_adjustments"].append({
                 "factor": "Severe EPDK Price Cap (AUF) Intervention", "impact_pct": penalty * 100
             })
 
         # KURAL 2: SPOT ELEKTRİK FİYATLARI (PTF - Piyasa Takas Fiyatı)
-        # Tavan fiyat yoksa ve kış sert geçiyorsa / doğal gaz pahalıysa, elektrik üreten şirketler bayram eder.
-        spot_electricity_trend = macro_context.get("tr_spot_electricity_trend", "stable")
-        
+        spot_electricity_trend = macro_context.get("tr_spot_electricity_trend", "stable").lower()
         if spot_electricity_trend == "surge" and epdk_auf_pressure != "high":
-            premium = 0.12 # Elektrik pahalı satılıyor, kâr marjı rekor kıracak.
+            premium = 0.12 
             total_adjustment_pct += premium
             hook_report["applied_adjustments"].append({
                 "factor": "Surging Spot Electricity Prices (PTF)", "impact_pct": premium * 100
             })
         elif spot_electricity_trend == "collapse":
-            penalty = -0.10 # Bahar aylarında barajlar taşıyorsa elektrik fiyatı sıfıra yaklaşır.
+            penalty = -0.10 
             total_adjustment_pct += penalty
             hook_report["applied_adjustments"].append({
                 "factor": "Collapsing Spot Electricity Prices", "impact_pct": penalty * 100
             })
 
-        # KURAL 3: KUR DEĞER KAYBI VE YEKDEM GARANTİLERİ (Yenilenebilir)
-        # Metadata eğer "yenilenebilir" veya "yekdem_heavy" diyorsa; TL'deki değer kaybı şirkete yarar (Dolarla satış yaparlar).
+        # KURAL 3: KUR DEĞER KAYBI VE YEKDEM GARANTİLERİ
         try_depreciation_forecast = macro_context.get("try_annual_depreciation_forecast", 25.0)
-        is_renewable_yekdem = metadata.get("renewable_yekdem_heavy", False)
+        is_renewable_yekdem = metadata.get("esg_metrics", {}).get("renewable_yekdem_heavy", False) # Metadata yapısı standartlaştırıldı
         
         if try_depreciation_forecast > 45.0 and is_renewable_yekdem:
-            premium = 0.10 # Kur fırladıkça Dolar garantili satışların TL ciro katkısı patlar.
+            premium = 0.10 
             total_adjustment_pct += premium
             hook_report["applied_adjustments"].append({
-                "factor": "FX Depreciation Advantage (USD Guaranteed Sales)", "impact_pct": premium * 100
+                "factor": "FX Depreciation Advantage (USD Guaranteed YEKDEM Sales)", "impact_pct": premium * 100
             })
 
-        # NİHAİ UYGULAMA
+        # KURAL 4: İKLİM RİSKİ (Kuraklık) - Hidroelektrik Ağırlıklı Şirketler İçin
+        climate_drought_risk = macro_context.get("climate_drought_risk", "low").lower()
+        if climate_drought_risk == "high" and is_renewable_yekdem:
+             penalty = -0.08
+             total_adjustment_pct += penalty
+             hook_report["applied_adjustments"].append({
+                "factor": "Severe Drought Risk (Hydroelectric Production Drop)", "impact_pct": penalty * 100
+            })
+
+        # CLAMPING (Sınırlandırma Koruması): Enerji sektöründe regülasyonlar marjları koruduğu için şoklar -%25 ile +%20 arasında tutulur.
+        total_adjustment_pct = max(-0.25, min(0.20, total_adjustment_pct))
+        
         adjusted_value = base_intrinsic_value_tl * (1 + total_adjustment_pct)
         
         hook_report["total_discount_or_premium_pct"] = round(total_adjustment_pct * 100, 2)
         hook_report["original_model_value_tl"] = round(base_intrinsic_value_tl, 2)
         hook_report["hook_adjusted_value_tl"] = round(adjusted_value, 2)
-        
-        logger.info(f"[{ticker}] Hook Etkisi: % {total_adjustment_pct*100:.2f} | Yeni Değer: {adjusted_value:.2f}")
 
         return adjusted_value, hook_report

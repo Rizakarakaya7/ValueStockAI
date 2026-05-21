@@ -34,7 +34,6 @@ logger = logging.getLogger(__name__)
 # =========================================================
 # PIPELINE CONTEXT
 # =========================================================
-
 class PipelineContext(BaseModel):
     job_id: str
     ticker: str
@@ -50,7 +49,6 @@ class PipelineContext(BaseModel):
 # =========================================================
 # ORCHESTRATOR
 # =========================================================
-
 class ValuationOrchestrator:
 
     def __init__(self, state_manager: StateManager):
@@ -87,6 +85,9 @@ class ValuationOrchestrator:
         try:
             config = BistRegistryService.get_ticker_config(ticker)
             ctx = PipelineContext(job_id=job_id, ticker=ticker, config=config)
+            
+            # Dinamik modeller ve kancalar (hooks) için arketipi metadata'ya ekliyoruz
+            ctx.metadata["archetype"] = config.archetype.value
 
             await self._measure_time("extraction", ctx, self._step_extract_data, ctx)
             await self.state_manager.update_state(job_id, PipelineStatus.DATA_FETCHED)
@@ -105,7 +106,7 @@ class ValuationOrchestrator:
             final_payload = self._build_final_payload(ctx)
             await self.state_manager.update_state(job_id, PipelineStatus.COMPLETED)
 
-            logger.info(f"[{job_id}] PIPELINE TAMAMLANDI: {ticker} | Intrinsic Value: {final_payload['intrinsic_company_value']}")
+            logger.info(f"[{job_id}] PIPELINE TAMAMLANDI: {ticker} | Intrinsic Value: {final_payload.get('intrinsic_company_value')}")
             return final_payload
 
         except Exception as e:
@@ -183,28 +184,68 @@ class ValuationOrchestrator:
         model = self.model_dispatcher.get_model(ctx.config.sector)
         intrinsic_value, report = model.calculate_intrinsic_value(ctx.df, ctx.metadata)
         
-        # --- DÜZELTME: ZEMİN KORUMASI (FLOOR) MÜDAHALESİ ---
+        # --- DİNAMİK SOTP (SUM OF THE PARTS) KONTROLÜ ---
+        # Sisteme dahil olan şirketin arketipi 'Operational_Holding' ise ve alt iştirakleri haritada belirtilmişse:
+        if ctx.config.archetype.value == "Operational_Holding" and ctx.config.child_stakes:
+            logger.info(f"[{ctx.ticker}] Dinamik SOTP (Parçaların Toplamı) Motoru devreye giriyor...")
+            try:
+                total_subsidiary_value = 0.0
+                sotp_details = {}
+                
+                # BİST Haritasından çekilen tüm iştirakleri tek tek dönüp güncel değerlerini alıyoruz
+                for child_ticker, stake in ctx.config.child_stakes.items():
+                    child_data = await self.yf_engine.fetch_all_data_async(child_ticker)
+                    market_data = child_data.get("market_data", {})
+                    
+                    mcap_tl = market_data.get("market_cap_tl")
+                    if not mcap_tl:
+                        c_price = market_data.get("current_price")
+                        c_shares = market_data.get("shares_outstanding")
+                        if c_price and c_shares:
+                            mcap_tl = float(c_price) * float(c_shares)
+                            
+                    if mcap_tl and mcap_tl > 0:
+                        stake_val = float(mcap_tl) * stake
+                        total_subsidiary_value += stake_val
+                        sotp_details[child_ticker] = {"stake_pct": stake * 100, "value_tl": stake_val}
+                    else:
+                        logger.warning(f"[{ctx.ticker}] SOTP Atlandı: {child_ticker} piyasa değeri hesaplanamadı!")
+
+                if total_subsidiary_value > 0:
+                    # Kendi ana operasyonları için holding değerine %25 prim uygulanır
+                    sotp_value_tl = total_subsidiary_value * 1.25
+                    
+                    logger.info(f"[{ctx.ticker}] Dinamik SOTP Başarılı! İştirakler Toplamı: {total_subsidiary_value} TL, SOTP Değeri: {sotp_value_tl} TL")
+                    
+                    intrinsic_value = sotp_value_tl
+                    report["model_used"] = "SOTP_Operational_Holding"
+                    report["sotp_subsidiaries"] = sotp_details
+                    report["core_operations_premium_pct"] = 25
+                    
+            except Exception as e:
+                logger.error(f"[{ctx.ticker}] Dinamik SOTP hesaplaması başarısız oldu, klasik modele dönülüyor: {e}")
+
+        # Zemin Koruması (Safeguards)
         safeguards = ctx.metadata.get("valuation_safeguards", {})
         book_value_floor_cents = safeguards.get("book_value_floor_cents", 0)
         
         if book_value_floor_cents > 0:
-            # Taban değerini Milyar TL cinsine çevir (Total Company Value)
             floor_total_value_tl = book_value_floor_cents / 100.0
             
-            # Eğer DCF nakit akışı 0 döndürdüyse veya tabanın altındaysa korumayı tetikle
             if intrinsic_value <= 0 or intrinsic_value < floor_total_value_tl:
                 logger.info(f"[{ctx.ticker}] DCF Değeri ({intrinsic_value} TL) zemin korumasının altında. Şirket değeri Defter Değeri Tabanına ({floor_total_value_tl} TL) sabitleniyor.")
                 report["floor_triggered"] = True
                 report["original_model_value"] = intrinsic_value
                 intrinsic_value = floor_total_value_tl
-        # ---------------------------------------------------
 
         ctx.metadata["base_intrinsic_value"] = intrinsic_value
         ctx.metadata["model_report"] = report
 
     async def _step_apply_hooks(self, ctx: PipelineContext):
+        # Kancalar (Hooks) temiz ve aracısız şekilde çalıştırılır, muafiyetler Hook'un içindedir.
         hook_class = self.hook_dispatcher.get_hook(ctx.config.sector)
         macro_data = ctx.metadata.get("macro_context", {})
+        
         adjusted_value, hook_report = hook_class.apply_market_regime(
             base_intrinsic_value_tl=ctx.metadata.get("base_intrinsic_value", 0.0),
             metadata=ctx.metadata,
@@ -213,9 +254,6 @@ class ValuationOrchestrator:
         ctx.metadata["final_intrinsic_value"] = adjusted_value
         ctx.metadata["hook_adjustments"] = hook_report
 
-    # =====================================================
-    # JSON SANITIZER
-    # =====================================================
     def _sanitize_for_json(self, obj: Any) -> Any:
         if isinstance(obj, dict):
             return {
@@ -235,25 +273,19 @@ class ValuationOrchestrator:
         else:
             return obj
 
-    # =====================================================
-    # FINAL PAYLOAD
-    # =====================================================
     def _build_final_payload(self, ctx: PipelineContext) -> Dict[str, Any]:
         market_data = ctx.metadata.get("market_data", {})
         current_price = market_data.get("current_price")
         shares_outstanding = market_data.get("shares_outstanding")
         
-        # Motorun bulduğu Toplam Şirket Değeri
         final_company_value = ctx.metadata.get("final_intrinsic_value", 0.0)
         
         intrinsic_price_per_share = None
         upside_pct = 0.0
 
-        # Hisse Başına Düşen Fiyatı Hesapla
         if shares_outstanding and shares_outstanding > 0 and final_company_value:
             intrinsic_price_per_share = final_company_value / shares_outstanding
             
-            # Anlık Fiyat ile Getiri Potansiyelini Hesapla
             if current_price and current_price > 0:
                 upside_pct = round(((intrinsic_price_per_share / current_price) - 1) * 100, 2)
 
@@ -267,7 +299,7 @@ class ValuationOrchestrator:
             "current_price": current_price,
             "shares_outstanding": shares_outstanding,
             "intrinsic_company_value": final_company_value,
-            "intrinsic_price_per_share": intrinsic_price_per_share,  # ARTIK HEDEF FİYATIMIZ VAR!
+            "intrinsic_price_per_share": intrinsic_price_per_share,
             "upside_potential_pct": upside_pct,
             "valuation_metadata": sanitized_metadata,
             "telemetry": ctx.telemetry

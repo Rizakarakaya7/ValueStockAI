@@ -17,6 +17,8 @@ class HoldingHook:
     ) -> Tuple[float, Dict[str, Any]]:
         
         ticker = metadata.get("ticker", "UNKNOWN")
+        archetype = metadata.get("archetype", "UNKNOWN")
+        
         logger.info(f"[{ticker}] Holding Makro Hook devrede. Holding İskontosu ve Yabancı Takası taranıyor.")
         
         if base_intrinsic_value_tl <= 0:
@@ -30,24 +32,30 @@ class HoldingHook:
         
         total_tl_adjustment = 0.0
 
-        # KURAL 1: YAPISAL HOLDİNG İSKONTOSU (Conglomerate Discount)
-        # Piyasalar, holdingin bürokrasisini ve çoklu yapısını sevmez. Standart bir cezası vardır.
-        base_discount_pct = 0.35
-        holding_discount_tl = base_intrinsic_value_tl * base_discount_pct
-        total_tl_adjustment -= holding_discount_tl
-        
-        hook_report["applied_adjustments"].append({
-            "factor": "Structural Conglomerate Discount", 
-            "impact_tl": -holding_discount_tl,
-            "logic": "Yapısal Holding İskontosu (Yönetim maliyetleri ve hantallık) nedeniyle EV'den %20 kesinti."
-        })
+        # KURAL 1: YAPISAL HOLDİNG İSKONTOSU VEYA MUAFİYETİ
+        if archetype == "Operational_Holding":
+            # Operasyonel holdingler (AEFES vb.) üretim yapar, bu yüzden yapısal iskontodan muaftırlar.
+            hook_report["applied_adjustments"].append({
+                "factor": "Operational Holding Exemption", 
+                "impact_tl": 0.0,
+                "logic": "Şirket 'Operasyonel Holding' statüsünde olduğu için %35 yapısal iskonto uygulanmamıştır."
+            })
+        else:
+            # Standart holding iskontosu (KCHOL, SAHOL vb.)
+            base_discount_pct = 0.35
+            holding_discount_tl = base_intrinsic_value_tl * base_discount_pct
+            total_tl_adjustment -= holding_discount_tl
+            
+            hook_report["applied_adjustments"].append({
+                "factor": "Structural Conglomerate Discount", 
+                "impact_tl": -holding_discount_tl,
+                "logic": "Yapısal Holding İskontosu (Yönetim maliyetleri ve hantallık) nedeniyle EV'den %35 kesinti."
+            })
 
-        # KURAL 2: YABANCI YATIRIMCI İŞTAHI (Foreign Portfolio Inflows)
-        # Yabancıların BİST'te ilk aldığı hisseler holdinglerdir.
+        # KURAL 2: YABANCI YATIRIMCI İŞTAHI
         foreign_flow = macro_context.get("foreign_investor_flow", "neutral")
         
         if foreign_flow == "strong_inflow":
-            # Yabancı girişi iskontoyu daraltır (Değeri yukarı çeker)
             foreign_premium_tl = base_intrinsic_value_tl * 0.15 
             total_tl_adjustment += foreign_premium_tl
             hook_report["applied_adjustments"].append({
@@ -56,7 +64,6 @@ class HoldingHook:
                 "logic": "Güçlü yabancı sermaye girişi Holding İskontosunu daraltarak hisseye %15 likidite primi sağladı."
             })
         elif foreign_flow == "strong_outflow":
-            # Yabancı kaçarsa iskontolar daha da büyür
             foreign_penalty_tl = base_intrinsic_value_tl * 0.10
             total_tl_adjustment -= foreign_penalty_tl
             hook_report["applied_adjustments"].append({

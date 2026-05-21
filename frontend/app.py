@@ -1,64 +1,70 @@
 import os
 import streamlit as st
 import requests
-import plotly.graph_objects as go
 import pandas as pd
 
 # ==========================================
 # 1. SAYFA YAPILANDIRMASI VE CSS DÜZELTMELERİ
 # ==========================================
 st.set_page_config(
-    page_title="FinansAjanı | AI Destekli Değerleme Terminali",
+    page_title="ValueStockAI | AI Destekli Değerleme Terminali",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Tema bağımsız kesin görünüm için CSS enjeksiyonu
+# Logo dosyasının dinamik yolunu buluyoruz (frontend klasörü içi)
+LOGO_PATH = os.path.join(os.path.dirname(__file__), "logo.png")
+
+# CSS Enjeksiyonu
 st.markdown("""
     <style>
-    /* Her bir metrik kartının arka planını kesin olarak koyu griye sabitler */
+    /* YENİ: Metrik kartları (Fiyat Kutuları) - Açık Mavi Tema ve KESİN EŞİT BOYUT */
     div[data-testid="stMetric"] {
-        background-color: #1E1E1E !important;
+        background-color: #E3F2FD !important; /* Ferah açık mavi arka plan */
         padding: 20px !important;
         border-radius: 10px !important;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.4) !important;
-        border: 1px solid #2D3748 !important;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1) !important;
+        border: 1px solid #90CAF9 !important; /* İnce mavi/lacivert çerçeve */
+        height: 140px !important; /* Bütün kutuların yüksekliğini eşitler */
+        display: flex !important;
+        flex-direction: column !important;
+        justify-content: center !important; /* İçeriği dikey eksende kusursuz ortalar */
     }
     
-    /* Metrik içindeki değer (rakam) rengini her zaman beyaz yapar */
+    /* Açık mavi arka planda sayıların (Fiyatların) okunaklı olması için koyu lacivert/siyah renk */
     div[data-testid="stMetricValue"] > div {
-        color: #FFFFFF !important;
-        font-weight: 700 !important;
+        color: #1A202C !important; 
+        font-weight: 800 !important;
     }
     
-    /* Metrik başlıklarının (etiketlerinin) rengini açık gri yapar */
+    /* Başlıkların rengi (Koyu mavi) */
     div[data-testid="stMetricLabel"] > div {
-        color: #A0AEC0 !important;
-        font-size: 14px !important;
-    }
-    
-    /* Değişim/Delta (Oklar ve yüzdeler) için kalınlık ayarı */
-    div[data-testid="stMetricDelta"] > div {
+        color: #1565C0 !important; 
+        font-size: 15px !important;
         font-weight: 600 !important;
     }
     
-    /* Yapay Zeka Rapor Kutusu Ayarları */
+    /* Yüzdelik değişimlerin (Okların) kalınlığı */
+    div[data-testid="stMetricDelta"] > div {
+        font-weight: 700 !important;
+    }
+    
+    /* Yapay Zeka Rapor Kutusu Ayarları (Göz yormayan açık renk) */
     .report-box {
-        background-color: #1E1E1E;
-        color: #F8F9FA !important;
+        background-color: #F8F9FA; 
+        color: #2D3748 !important; 
         padding: 30px;
         border-radius: 10px;
         border-left: 5px solid #FF4B4B;
         font-size: 16px;
         line-height: 1.7;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.4);
-        border: 1px solid #2D3748;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        border: 1px solid #E2E8F0;
     }
     
-    /* Rapor içindeki Markdown başlıklarının renk optimizasyonu */
     .report-box h1, .report-box h2, .report-box h3 {
-        color: #FFFFFF !important; 
+        color: #1A202C !important; 
         margin-top: 20px;
         margin-bottom: 15px;
         font-weight: 600;
@@ -76,9 +82,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# DİNAMİK API BAĞLANTISI (DOCKER / LOCALHOST UYUMU)
+# DİNAMİK API BAĞLANTISI 
 # ==========================================
-# Ortam değişkeni (Docker) varsa onu alır, yoksa (Lokal) localhost'u kullanır.
 BASE_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
 API_URL = f"{BASE_URL}/api/v1/valuate/"
 
@@ -86,9 +91,17 @@ API_URL = f"{BASE_URL}/api/v1/valuate/"
 # 2. YAN MENÜ (SIDEBAR) KONTROLLERİ
 # ==========================================
 with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/2633/2633320.png", width=100)
-    st.title("FinansAjanı Terminali")
-    st.markdown("Quant Motoru & Gemini AI")
+    st.write("<br>", unsafe_allow_html=True)
+    # Yan menüdeki logoyu ortalamak ve büyütmek için kolon hilesi
+    sidebar_logo_col1, sidebar_logo_col2, sidebar_logo_col3 = st.columns([1, 4, 1])
+    with sidebar_logo_col2:
+        if os.path.exists(LOGO_PATH):
+            st.image(LOGO_PATH, use_column_width=True)
+        else:
+            st.warning("Logo bulunamadı.")
+        
+    st.title("ValueStockAI Terminali")
+    st.markdown("Quant Motoru & Yatırım Komitesi")
     st.divider()
     
     ticker_input = st.text_input("Hisse Kodu Giriniz", "FROTO").upper().strip()
@@ -104,7 +117,7 @@ if run_button:
     if not ticker_input:
         st.warning("Lütfen geçerli bir hisse kodu giriniz.")
     else:
-        with st.spinner(f"🤖 {ticker_input} için veriler toplanıyor, DCF modeli çalıştırılıyor ve Yapay Zeka raporu yazılıyor..."):
+        with st.spinner(f"🤖 {ticker_input} için komite toplanıyor, veriler sentezleniyor..."):
             try:
                 response = requests.get(f"{API_URL}{ticker_input}", timeout=45)
                 
@@ -113,27 +126,34 @@ if run_button:
                     quant = data["quant_payload"]
                     report_markdown = data["analyst_report"]
                     
-                    # Verilerin Güvenli Çıkarılması
                     curr_price = quant.get("current_price") or 0.0
                     target_price = quant.get("intrinsic_price_per_share") or 0.0
                     upside = quant.get("upside_potential_pct") or 0.0
+
+                    # Başlığı tam ortaya alıyoruz
+                    st.markdown(f"<h3 style='text-align: center;'>{ticker_input} Finansal Check-up Özeti</h3>", unsafe_allow_html=True)
                     
-                    meta = quant.get("valuation_metadata", {})
-                    wacc = meta.get("model_report", {}).get("applied_wacc", 0.0) * 100
-                    model_used = meta.get("model_report", {}).get("model_used", "Bilinmiyor")
+                    # ==========================================
+                    # LOGOYU SONUÇLARIN TEPESİNE ORTALAMA (Bir Tık Büyütüldü)
+                    # ==========================================
+                    logo_col1, logo_col2, logo_col3 = st.columns([1.8, 1.4, 1.8]) 
+                    with logo_col2:
+                        if os.path.exists(LOGO_PATH):
+                            st.image(LOGO_PATH, use_column_width=True)
+                    
+                    st.write("<br>", unsafe_allow_html=True) 
 
                     # ==========================================
-                    # 4. SKOR KARTLARI (METRICS GRID)
+                    # 4. SKOR KARTLARI (Eşit ve Açık Mavi 3 Sütun)
                     # ==========================================
-                    st.markdown(f"### {ticker_input} Finansal Check-up Özeti")
-                    col1, col2, col3, col4 = st.columns(4)
+                    col1, col2, col3 = st.columns(3)
                     
                     col1.metric(
                         label="Anlık Piyasa Fiyatı", 
                         value=f"₺ {curr_price:,.2f}" if curr_price > 0 else "Veri Yok"
                     )
                     col2.metric(
-                        label="Hesaplanan Hedef Fiyat", 
+                        label="Adil Değer", 
                         value=f"₺ {target_price:,.2f}" if target_price > 0 else "Hesaplanamadı"
                     )
                     col3.metric(
@@ -142,63 +162,30 @@ if run_button:
                         delta=f"{upside:,.2f}%" if upside != 0 else None,
                         delta_color="normal" if upside > 0 else "inverse"
                     )
-                    col4.metric(
-                        label="Uygulanan Sermaye Maliyeti", 
-                        value=f"% {wacc:,.1f} WACC", 
-                        delta=model_used.replace("_", " "), 
-                        delta_color="off"
-                    )
                     
                     st.divider()
 
                     # ==========================================
-                    # 5. GÖRSEL GRAFİK VE ANALİST RAPORU
+                    # 5. AJAN RAPORU (Tam Genişlik)
                     # ==========================================
-                    left_col, right_col = st.columns([1, 1.5])
-                    
-                    with left_col:
-                        st.subheader("📊 Potansiyel Kadranı")
-                        
-                        # Kadran Grafiği (Gauge Chart) Sınır Tayini
-                        max_range = max(curr_price, target_price) * 1.5 if max(curr_price, target_price) > 0 else 1000
-                        
-                        fig = go.Figure(go.Indicator(
-                            mode="gauge+number+delta",
-                            value=target_price,
-                            domain={'x': [0, 1], 'y': [0, 1]},
-                            title={'text': "Hisse Başı Adil Değer", 'font': {'size': 20, 'color': '#FFFFFF' if st.get_option("theme.base") == "dark" else '#000000'}},
-                            delta={'reference': curr_price, 'increasing': {'color': "green"}},
-                            gauge={
-                                'axis': {'range': [0, max_range], 'tickwidth': 1},
-                                'bar': {'color': "#FF4B4B"},
-                                'steps': [
-                                    {'range': [0, curr_price], 'color': '#2D3748'},
-                                    {'range': [curr_price, max_range], 'color': '#1A202C'}
-                                ],
-                                'threshold': {
-                                    'line': {'color': "gold", 'width': 4},
-                                    'thickness': 0.8,
-                                    'value': target_price
-                                }
-                            }
-                        ))
-                        fig.update_layout(height=380, margin=dict(l=20, r=20, t=40, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-                        st.plotly_chart(fig, use_container_width=True)
-                        
-                        with st.expander("🔍 Değerleme Denetim İzi (Audit Trace)"):
-                            st.json(meta.get("audit_trace", {}))
-                            st.json(meta.get("balance_sheet_snapshot", {}))
-
-                    with right_col:
-                        st.subheader("🤖 Hedge Fund Analist Raporu")
-                        st.markdown(f'<div class="report-box">{report_markdown}</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="report-box">{report_markdown}</div>', unsafe_allow_html=True)
                 
                 else:
                     st.error(f"API Hatası (Kod: {response.status_code}): {response.text}")
                     
             except requests.exceptions.ConnectionError:
-                st.error("Bağlantı Hatası: Arka plan API sunucusuna (FastAPI) ulaşılamıyor. 'uvicorn main:app --reload' komutunun çalıştığından emin olun.")
+                st.error("Bağlantı Hatası: Arka plan API sunucusuna ulaşılamıyor.")
             except Exception as e:
                 st.error(f"Beklenmeyen bir hata oluştu: {str(e)}")
 else:
-    st.info("👈 Analize başlamak için sol menüden bir hisse kodu girin (Örn: FROTO, TOASO) ve 'Analizi Başlat' butonuna tıklayın.")
+    # ==========================================
+    # ANA EKRAN (KARŞILAMA): Daha Da Büyütülmüş ve Ortalanmış Logo
+    # ==========================================
+    st.write("<br><br>", unsafe_allow_html=True) 
+    
+    col1, col2, col3 = st.columns([0.5, 3, 0.5]) # Yan sütunlar daraltılarak orta logo alanı genişletildi (Daha büyük görünüm)
+    with col2:
+        if os.path.exists(LOGO_PATH):
+            st.image(LOGO_PATH, use_column_width=True)
+            
+    st.markdown("<h3 style='text-align: center; color: #A0AEC0; margin-top: 20px;'>Analize başlamak için sol menüden bir hisse kodu girin.</h3>", unsafe_allow_html=True)

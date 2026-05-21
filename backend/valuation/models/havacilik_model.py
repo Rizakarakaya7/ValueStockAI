@@ -1,84 +1,87 @@
-import logging
 import pandas as pd
 from typing import Dict, Any, Tuple
+import logging
+
 from valuation.models.base_model import BaseValuationModel
-from valuation.bist_registry import CurrencyType
+from valuation.core_logic.taxonomy_registry import FinancialConcept, get_taxonomy_keys
+from valuation.bist_registry import FinancialGroupCode
 
 logger = logging.getLogger(__name__)
 
 class HavacilikModel(BaseValuationModel):
-    """
-    HAVACILIK SEKTÖRÜ İZOLE MODELLİ (Örn: THYAO, PGSUS)
-    Kapasite (Filo) büyümesine dayalı, ağır CapEx gerektiren ancak IFRS-16 nedeniyle 
-    borçluluğu yüksek görünen şirketler için Dolar (USD) dinamiklerine duyarlı DCF modeli.
-    """
-    
-    SECTOR_BETA = 1.20               # Dış şoklara (Pandemi, Savaş) açık olduğu için volatilitesi yüksektir.
-    TERMINAL_GROWTH_RATE = 0.02      # Global havacılık uzun vade büyüme oranı (Reel GSYH + 1)
-    PROJECTION_YEARS = 5
-
-    def calculate_intrinsic_value(
-        self, 
-        df: pd.DataFrame, 
-        metadata: Dict[str, Any]
-    ) -> Tuple[float, Dict[str, Any]]:
-        
+    def calculate_intrinsic_value(self, df: pd.DataFrame, metadata: Dict[str, Any]) -> Tuple[float, Dict[str, Any]]:
         ticker = metadata.get("ticker", "UNKNOWN")
-        logger.info(f"[{ticker}] Havacılık Kapasite Büyüme (Capacity Expansion) DCF Modeli çalıştırılıyor.")
+        reporting_group = FinancialGroupCode.SANAYI
         
-        if 'CALC_OWNERS_EARNINGS_TTM' not in df.index:
-            raise ValueError(f"[{ticker}] Patronun Nakdi (Owner's Earnings) eksik.")
+        # 1. KUR DÖNÜŞÜMÜ (FX-AWARE) - THYAO Gibi Döviz Raporlayanlar İçin Kritik!
+        currency = str(metadata.get("market_data", {}).get("currency", "TRY")).split('.')[-1].upper()
+        
+        # Gerçek bir sistemde bu FX rate metadata içinden (örn: metadata.get("fx_usd_try")) 
+        # dinamik gelmelidir. Şimdilik güvenlik ağı (fallback) olarak sabitliyoruz:
+        fx_rate = 1.0
+        if currency == "USD":
+            fx_rate = 32.20  
+        elif currency == "EUR":
+            fx_rate = 35.10
+        
+        # debt_adjuster.py IFRS-16 düzeltmesini halihazırda yaptığı için çifte sayımı kaldırdık!
+        total_adjusted_debt_try = metadata.get("balance_sheet_snapshot", {}).get("net_debt_cents", 0.0) / 100.0
+
+        # 2. TTM EBITDA HESAPLAMASI (Mükerrer satır engellemesi ile)
+        ebit_keys = get_taxonomy_keys(reporting_group, FinancialConcept.EBIT)
+        da_keys = get_taxonomy_keys(reporting_group, FinancialConcept.DEPRECIATION)
+        
+        # Tüm eşleşenleri ".sum().sum()" ile toplamak yerine, 
+        # kârı 2'ye katlamamak için matristeki İLK geçerli taxonomy etiketini alıyoruz.
+        valid_ebit = [k for k in ebit_keys if k in df.index]
+        valid_da = [k for k in da_keys if k in df.index]
+        
+        ttm_ebit = float(df.loc[valid_ebit[0], df.columns[-4:]].sum()) if valid_ebit else 0.0
+        ttm_da = float(df.loc[valid_da[0], df.columns[-4:]].sum()) if valid_da else 0.0
+        
+        # Kuruş (cents) formatından kurtarıp, doğru FX çarpanı ile TRY bazına oturtuyoruz
+        ttm_ebitda_try = ((ttm_ebit + ttm_da) / 100.0) * fx_rate
+        
+        if ttm_ebitda_try <= 0:
+            logger.warning(f"[{ticker}] TTM EBITDA (TRY) negatif. Değerleme yapılamıyor.")
+            return 0.0, {"error": "Negative EBITDA", "blended_equity_tl": 0.0}
+
+        # 3. DİNAMİK ÇARPAN YÖNETİMİ
+        leverage_ratio = total_adjusted_debt_try / ttm_ebitda_try if ttm_ebitda_try > 0 else 5.0
+        
+        is_thyao = (ticker == "THYAO")
+        base_ebitda_mult = 6.5 if is_thyao else 6.0
+        base_oe_mult = 9.0 if is_thyao else 8.5
+        
+        # Kaldıraç cezalandırması / ödüllendirmesi
+        if leverage_ratio > 3.5:
+            base_ebitda_mult -= 0.5
+            base_oe_mult -= 1.0
+        elif leverage_ratio < 1.5:
+            base_ebitda_mult += 0.5
+            base_oe_mult += 0.5
+
+        # 4. OWNER EARNINGS (SAHİPLİK KAZANÇLARI)
+        if "CALC_OWNERS_EARNINGS_TTM" in df.index:
+            oe_raw = float(df.loc["CALC_OWNERS_EARNINGS_TTM"].iloc[-1]) / 100.0
+            oe_try = oe_raw * fx_rate
+        else:
+            oe_ratio = max(0.30, min(0.50, 0.50 - (leverage_ratio * 0.05)))
+            oe_try = ttm_ebitda_try * oe_ratio
             
-        base_fcf_cents = float(df.loc['CALC_OWNERS_EARNINGS_TTM'].iloc[-1])
+        oe_try = min(oe_try, ttm_ebitda_try * 0.7)
+
+        # 5. FİRMA DEĞERİ (EV) HESAPLAMA
+        ev_ebitda_eq = max(0, (ttm_ebitda_try * base_ebitda_mult) - total_adjusted_debt_try)
+        ev_oe_eq = max(0, (oe_try * base_oe_mult))
         
-        if base_fcf_cents <= 0:
-            return 0.0, {"warning": "Negatif FCF. Filo yatırımının (CapEx) pik yaptığı bir yıl olabilir. Floor (Zemin) beklenecek."}
-
-        # Havacılık şirketlerinin gelirleri ağırlıklı dövizdir. Metadata'dan kontrol ediyoruz.
-        # İleride "USD WACC" (Örn: %8-%10 arası) uygulamak için bu bayrak (flag) çok kritiktir.
-        func_currency = metadata.get("functional_currency", CurrencyType.USD)
+        blended_equity_tl = (ev_ebitda_eq * 0.65) + (ev_oe_eq * 0.35)
         
-        # TL bazlı proxy WACC (İleride USD risksiz getiri + TR CDS ile değiştirilebilir)
-        risk_free_rate = 0.35  
-        erp = 0.08             
-        discount_rate = self.calculate_wacc(risk_free_rate, self.SECTOR_BETA, erp)
-
-        # 1. FİLO BÜYÜME PROJEKSİYONU (Capacity Expansion Phase)
-        projected_cash_flows = []
-        current_fcf = base_fcf_cents
-        present_value_of_fcf = 0.0
-        
-        # Filoya yeni uçakların katılım hızı genelde ilk yıllarda agresif, sonra stabilizasyon şeklindedir.
-        growth_path = [0.12, 0.10, 0.08, 0.05, 0.03]
-        
-        for year in range(1, self.PROJECTION_YEARS + 1):
-            growth = growth_path[year - 1]
-            current_fcf = current_fcf * (1 + growth)
-            projected_cash_flows.append(current_fcf)
-            
-            discount_factor = (1 + discount_rate) ** year
-            present_value_of_fcf += (current_fcf / discount_factor)
-
-        # 2. UÇ DEĞER (Terminal Value)
-        terminal_value = (projected_cash_flows[-1] * (1 + self.TERMINAL_GROWTH_RATE)) / (discount_rate - self.TERMINAL_GROWTH_RATE)
-        pv_of_terminal_value = terminal_value / ((1 + discount_rate) ** self.PROJECTION_YEARS)
-        
-        enterprise_value_cents = present_value_of_fcf + pv_of_terminal_value
-
-        # 3. KİRA (IFRS-16) VE NET BORÇ DÜZELTMESİ (En Kritik Aşama)
-        # THY ve Pegasus için milyarlarca liralık kiralama borcu burada değerden düşülür.
-        net_debt_cents = metadata.get("balance_sheet_snapshot", {}).get("net_debt_cents", 0)
-        target_equity_value_cents = enterprise_value_cents - net_debt_cents
-
-        target_equity_value_tl = target_equity_value_cents / 100.0
-
-        model_report = {
-            "model_used": "Havacilik_Capacity_DCF",
-            "functional_currency_flag": func_currency.value,
-            "applied_wacc": discount_rate,
-            "pv_of_fcf_tl": present_value_of_fcf / 100,
-            "ifrs_16_lease_debt_deducted": True, 
-            "enterprise_value_tl": enterprise_value_cents / 100,
+        return blended_equity_tl, {
+            "ticker": ticker,
+            "currency_applied": currency,
+            "fx_rate_multiplier": fx_rate,
+            "ttm_ebitda_try": ttm_ebitda_try,
+            "leverage_ratio": leverage_ratio,
+            "blended_equity_tl": blended_equity_tl
         }
-
-        return target_equity_value_tl, model_report

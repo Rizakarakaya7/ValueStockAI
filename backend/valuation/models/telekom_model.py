@@ -1,80 +1,86 @@
-import logging
 import pandas as pd
 from typing import Dict, Any, Tuple
+import logging
+
 from valuation.models.base_model import BaseValuationModel
+from valuation.core_logic.taxonomy_registry import FinancialConcept, get_taxonomy_keys
+from valuation.bist_registry import FinancialGroupCode
 
 logger = logging.getLogger(__name__)
 
 class TelekomModel(BaseValuationModel):
     """
-    TELEKOMÜNİKASYON SEKTÖRÜ İZOLE MODELLİ (Örn: TCELL, TTKOM)
-    'Abonelik ve Altyapı' (Subscription & Infrastructure) bazlı model.
-    Nakit akışları çok öngörülebilirdir, betası düşüktür ancak ağır CapEx (Fiber/5G) gerektirir.
+    TELEKOMÜNİKASYON SEKTÖRÜ İZOLE MODELİ (BIST UYUMLU) (Örn: TCELL, TTKOM)
+    Yüksek amortisman, döviz bazlı ağır CapEx gereksinimi ve 
+    'EBITDA İllüzyonu' filtreli, BIST tarihsel çarpanlarına optimize edilmiş karma model.
     """
     
-    SECTOR_BETA = 0.85               # Defansif sektör, piyasa dalgalanmalarından daha az etkilenir.
-    TERMINAL_GROWTH_RATE = 0.025     # Nüfus artışı ve veri tüketimi büyümesine (Data usage) paralel.
-    PROJECTION_YEARS = 5
-
-    def calculate_intrinsic_value(
-        self, 
-        df: pd.DataFrame, 
-        metadata: Dict[str, Any]
-    ) -> Tuple[float, Dict[str, Any]]:
-        
+    def calculate_intrinsic_value(self, df: pd.DataFrame, metadata: Dict[str, Any]) -> Tuple[float, Dict[str, Any]]:
         ticker = metadata.get("ticker", "UNKNOWN")
-        logger.info(f"[{ticker}] Telekom Altyapı ve Abonelik DCF Modeli çalıştırılıyor.")
+        reporting_group = FinancialGroupCode.SANAYI
+        logger.info(f"[{ticker}] Telekomünikasyon Sektör Modeli çalıştırılıyor (BIST Optimize).")
         
-        if 'CALC_OWNERS_EARNINGS_TTM' not in df.index:
-            raise ValueError(f"[{ticker}] Patronun Nakdi (Owner's Earnings) eksik.")
+        # 1. NET BORÇ DÜZELTMESİ
+        total_debt_try = metadata.get("balance_sheet_snapshot", {}).get("net_debt_cents", 0.0) / 100.0
+
+        # 2. TTM EBITDA HESAPLAMA
+        ebit_keys = get_taxonomy_keys(reporting_group, FinancialConcept.EBIT)
+        da_keys = get_taxonomy_keys(reporting_group, FinancialConcept.DEPRECIATION)
+        
+        valid_ebit = [k for k in ebit_keys if k in df.index]
+        valid_da = [k for k in da_keys if k in df.index]
+        
+        ttm_ebit = float(df.loc[valid_ebit[0], df.columns[-4:]].sum()) if valid_ebit else 0.0
+        ttm_da = float(df.loc[valid_da[0], df.columns[-4:]].sum()) if valid_da else 0.0
+        ttm_ebitda_try = (ttm_ebit + ttm_da) / 100.0
+        
+        if ttm_ebitda_try <= 0:
+            logger.warning(f"[{ticker}] TTM EBITDA negatif veya sıfır. Değerleme bypass edildi.")
+            return 0.0, {"error": "Negative EBITDA"}
+
+        # 3. BIST-SPESİFİK DİNAMİK ÇARPAN YÖNETİMİ
+        # Amortisman yükü (EBITDA İllüzyonu)
+        da_to_ebitda_ratio = ttm_da / (ttm_ebit + ttm_da) if (ttm_ebit + ttm_da) > 0 else 0.0
+        
+        # Gelişmekte olan pazar (EM) Telekom tarihsel çarpanları daha düşüktür (Risk/Faiz baskısı)
+        base_ebitda_mult = 4.0  # Eski 5.0'dan BIST gerçeğine çekildi
+        base_oe_mult = 5.0      # Eski 7.0'dan muhafazakar seviyeye çekildi
+        
+        # 4. OWNER EARNINGS (HİSSEDAR NAKİT AKIŞI) HESABI
+        if "CALC_OWNERS_EARNINGS_TTM" in df.index:
+            oe_raw = float(df.loc["CALC_OWNERS_EARNINGS_TTM"].iloc[-1]) / 100.0
+            # Sistemden gelen OE, amortisman/capex şokunu yansıtmıyorsa güvenlik marjı uygula
+            oe_try = min(oe_raw, ttm_ebitda_try * 0.25)
+        else:
+            # Telekomların ağır CapEx ve faiz yükü nedeniyle EBITDA'nın ancak %15-%20'si serbest nakde döner.
+            oe_try = ttm_ebitda_try * 0.18 
+        
+        # 5. FİRMA DEĞERİ (EV) VE HARMANLANMIŞ OTO-DEĞER
+        ev_ebitda_eq = max(0, (ttm_ebitda_try * base_ebitda_mult) - total_debt_try)
+        ev_oe_eq = max(0, (oe_try * base_oe_mult))
+        
+        if da_to_ebitda_ratio > 0.60:
+            logger.warning(f"[{ticker}] EBITDA İllüzyonu Saptandı! Amortisman/EBITDA Oranı: %{da_to_ebitda_ratio*100:.2f}.")
+            # Amortisman çok yüksekse, şirketin gerçeği EBITDA değil, kalan cılız Nakit Akışıdır (OE).
+            # OE modelinin ağırlığı radikal şekilde artırılır.
+            ebitda_weight, oe_weight = 0.30, 0.70
+        else:
+            ebitda_weight, oe_weight = 0.60, 0.40
             
-        base_fcf_cents = float(df.loc['CALC_OWNERS_EARNINGS_TTM'].iloc[-1])
-        
-        # Telekom şirketleri devasa FAVÖK üretir ama fiber yatırımı yılıysa FCF eksiye düşebilir.
-        if base_fcf_cents <= 0:
-            return 0.0, {"warning": "Negatif FCF. 5G veya altyapı ihalesi yılı olabilir. Floor mekanizmasına devredilecek."}
-
-        # İskonto Oranı (WACC)
-        risk_free_rate = 0.35  
-        erp = 0.08             
-        discount_rate = self.calculate_wacc(risk_free_rate, self.SECTOR_BETA, erp)
-
-        # 1. ABONELİK BÜYÜME PROJEKSİYONU (Subscription Compounding)
-        projected_cash_flows = []
-        current_fcf = base_fcf_cents
-        present_value_of_fcf = 0.0
-        
-        # Telekomda büyüme = (Enflasyonist ARPU artışı) + (Yeni Abone/Fiber Hanehalkı)
-        # Ağır enflasyonist ortamdan tek haneli enflasyona geçiş patikası varsayımı.
-        growth_path = [0.30, 0.20, 0.12, 0.08, 0.05] 
-        
-        for year in range(1, self.PROJECTION_YEARS + 1):
-            growth = growth_path[year - 1]
-            current_fcf = current_fcf * (1 + growth)
-            projected_cash_flows.append(current_fcf)
-            
-            discount_factor = (1 + discount_rate) ** year
-            present_value_of_fcf += (current_fcf / discount_factor)
-
-        # 2. UÇ DEĞER (Terminal Value)
-        terminal_value = (projected_cash_flows[-1] * (1 + self.TERMINAL_GROWTH_RATE)) / (discount_rate - self.TERMINAL_GROWTH_RATE)
-        pv_of_terminal_value = terminal_value / ((1 + discount_rate) ** self.PROJECTION_YEARS)
-        
-        enterprise_value_cents = present_value_of_fcf + pv_of_terminal_value
-
-        # 3. KREDİ VE LİSANS BORÇLARI (Net Borç Düzeltmesi)
-        # Telekom şirketlerinin devasa FX (Döviz) borçları ve lisans taksitleri vardır.
-        net_debt_cents = metadata.get("balance_sheet_snapshot", {}).get("net_debt_cents", 0)
-        target_equity_value_cents = enterprise_value_cents - net_debt_cents
-
-        target_equity_value_tl = target_equity_value_cents / 100.0
+        # Toplam Şirket Değeri (TL)
+        blended_equity_tl = (ev_ebitda_eq * ebitda_weight) + (ev_oe_eq * oe_weight)
 
         model_report = {
-            "model_used": "Telekom_Subscription_DCF",
-            "applied_wacc": discount_rate,
-            "pv_of_fcf_tl": present_value_of_fcf / 100,
-            "infrastructure_debt_deducted": True, 
-            "enterprise_value_tl": enterprise_value_cents / 100,
+            "model_used": "Telekom_Infrastructure_Adjusted_BIST",
+            "ttm_ebitda_tl": ttm_ebitda_try,
+            "da_to_ebitda_ratio": round(da_to_ebitda_ratio, 4),
+            "applied_ebitda_mult": base_ebitda_mult,
+            "applied_oe_mult": base_oe_mult,
+            "is_ebitda_illusion_triggered": da_to_ebitda_ratio > 0.60,
+            "applied_ebitda_weight": ebitda_weight,
+            "net_debt_tl": total_debt_try,
+            "total_equity_value_tl": blended_equity_tl
         }
 
-        return target_equity_value_tl, model_report
+        # Üst katman (floors_multiples.py veya orchestrator) bu toplam değeri hisse adedine bölecektir.
+        return blended_equity_tl, model_report

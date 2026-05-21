@@ -8,12 +8,14 @@ class FinancialConcept(str, Enum):
     REVENUE = "revenue"
     EBIT = "ebit"
     DEPRECIATION = "depreciation"
-    NET_INCOME = "net_income"       # <-- EKLENDİ (Bankacılık modeli için)
+    NET_INCOME = "net_income" # <-- EKLENDİ (Bankacılık modeli için)
+    NET_INCOME_PARENT = "net_income_parent"
     ONE_OFF_GAINS = "one_off_gains"
     ONE_OFF_LOSSES = "one_off_losses"
     
     # STOCK (Fotoğraf / Bilanço)
     TOTAL_EQUITY = "total_equity"
+    PARENT_EQUITY = "parent_equity"
     CASH_EQUIVALENTS = "cash_equivalents"
     ST_FINANCIAL_INVESTMENTS = "st_financial_investments"
     ST_DEBT = "st_debt"
@@ -32,11 +34,13 @@ CONCEPT_TYPE_MAP: Dict[FinancialConcept, StatementType] = {
     FinancialConcept.EBIT: StatementType.FLOW,
     FinancialConcept.DEPRECIATION: StatementType.FLOW,
     FinancialConcept.NET_INCOME: StatementType.FLOW, # <-- EKLENDİ
+    FinancialConcept.NET_INCOME_PARENT: StatementType.FLOW,
     FinancialConcept.CASH_EQUIVALENTS: StatementType.STOCK,
     FinancialConcept.ST_LEASE_LIABILITIES: StatementType.STOCK,
     FinancialConcept.ST_DEBT: StatementType.STOCK,
     FinancialConcept.LT_DEBT: StatementType.STOCK,
     FinancialConcept.TOTAL_EQUITY: StatementType.STOCK,
+    FinancialConcept.PARENT_EQUITY: StatementType.STOCK,
 }
 
 # Yahoo Finance Evrensel Terminolojisine Göre Güncellenmiş Dinamik Eşleşme
@@ -47,11 +51,13 @@ FINANCIAL_TAXONOMY: Dict[FinancialGroupCode, Dict[FinancialConcept, List[str]]] 
         FinancialConcept.EBIT: ["EBIT", "Operating Income"],
         FinancialConcept.DEPRECIATION: ["Reconciled Depreciation", "Depreciation And Amortization", "Depreciation"],
         FinancialConcept.NET_INCOME: ["Net Income", "Net Income Common Stockholders", "Net Income From Continuing And Discontinued Operation"], # <-- BURAYI EKLEDİK
+        FinancialConcept.NET_INCOME_PARENT: ["Net Income Common Stockholders", "Net Income"],
         FinancialConcept.ONE_OFF_GAINS: ["Gain On Sale Of Security", "Other Non Operating Income Expenses"],
         FinancialConcept.ONE_OFF_LOSSES: ["Restructuring And Mergern Acquisition", "Impairment Of Capital Assets"],
         
         # Bilanço
         FinancialConcept.TOTAL_EQUITY: ["Stockholders Equity", "Total Equity Gross Minority Interest", "Total Equity"],
+        FinancialConcept.PARENT_EQUITY: ["Stockholders Equity"],
         FinancialConcept.CASH_EQUIVALENTS: ["Cash And Cash Equivalents", "Cash", "Cash Cash Equivalents And Short Term Investments"],
         FinancialConcept.ST_FINANCIAL_INVESTMENTS: ["Other Short Term Investments", "Short Term Investments"],
         

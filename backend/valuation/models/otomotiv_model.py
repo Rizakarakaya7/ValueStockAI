@@ -1,21 +1,18 @@
-import logging
 import pandas as pd
 from typing import Dict, Any, Tuple
+import logging
+
 from valuation.models.base_model import BaseValuationModel
-from valuation.bist_registry import CurrencyType
+from valuation.core_logic.taxonomy_registry import FinancialConcept, get_taxonomy_keys
+from valuation.bist_registry import FinancialGroupCode
 
 logger = logging.getLogger(__name__)
 
 class OtomotivModel(BaseValuationModel):
     """
-    OTOMOTİV SEKTÖRÜ İZOLE MODELLİ (Örn: FROTO, TOASO)
-    Otomotiv şirketleri "Model Döngüsü" ile çalışır. Yeni araç platformu (örn: Elektrikli Ticari)
-    yatırımları sırasında CapEx zirve yapar, FCF düşer. Sonraki yıllarda hasat toplanır.
+    OTOMOTİV SEKTÖRÜ MODELLİ (Kapasite ve İhracat Odaklı)
+    Yüksek sermaye harcaması (CAPEX) ve Ar-Ge gerektiren, ihracat garantili DCF modeli.
     """
-    
-    SECTOR_BETA = 1.10               # BİST ortalamasına yakın, nispeten defansif (İhracat koruması)
-    TERMINAL_GROWTH_RATE = 0.02      # Global otomotiv pazarı olgun bir pazardır, büyüme muhafazakardır.
-    PROJECTION_YEARS = 5
 
     def calculate_intrinsic_value(
         self, 
@@ -24,61 +21,74 @@ class OtomotivModel(BaseValuationModel):
     ) -> Tuple[float, Dict[str, Any]]:
         
         ticker = metadata.get("ticker", "UNKNOWN")
-        logger.info(f"[{ticker}] Otomotiv EV/Model Geçişli DCF Modeli çalıştırılıyor.")
+        reporting_group = FinancialGroupCode.SANAYI
+        macro_context = metadata.get("macro_context", {})
         
-        if 'CALC_OWNERS_EARNINGS_TTM' not in df.index:
-            raise ValueError(f"[{ticker}] Patronun Nakdi (Owner's Earnings) eksik.")
+        logger.info(f"[{ticker}] Otomotiv DCF Motoru (Kapasite/İhracat Odaklı) çalıştırılıyor.")
+        
+        # 1. BİLANÇODAN GİRDİLERİN ÇEKİLMESİ
+        rev_keys = [k for k in get_taxonomy_keys(reporting_group, FinancialConcept.REVENUE) if k in df.index]
+        ebit_keys = [k for k in get_taxonomy_keys(reporting_group, FinancialConcept.EBIT) if k in df.index]
+        
+        if not rev_keys or not ebit_keys:
+            logger.error(f"[{ticker}] Değerleme için Ciro veya EBIT kalemi bulunamadı.")
+            return 0.0, {"warning": "Missing Core Data"}
             
-        base_fcf_cents = float(df.loc['CALC_OWNERS_EARNINGS_TTM'].iloc[-1])
+        ttm_revenue_cents = float(df.loc[rev_keys, df.columns[-4:]].sum().sum())
+        ttm_ebit_cents = float(df.loc[ebit_keys, df.columns[-4:]].sum().sum())
         
-        if base_fcf_cents <= 0:
-            return 0.0, {"warning": "Negatif FCF tespit edildi. Döngü dibi veya ağır CapEx yılı. Zemin (Floor) beklenecek."}
+        if ttm_revenue_cents <= 0 or ttm_ebit_cents <= 0:
+            return 0.0, {"warning": "Zero or Negative Revenue/EBIT"}
 
-        # BİST Otomotiv devlerinin (FROTO, TOASO) gelirleri büyük oranda Euro'dur.
-        # Eğer metadata functional_currency = EUR diyorsa, risksiz getiri TL tahvilleri yerine Eurobond/Euribor bazlı düşünülmeli.
-        # Not: Şimdilik basitleştirilmiş lokal WACC kullanıyoruz, ileride kur bazlı WACC'a geçilebilir.
-        func_currency = metadata.get("functional_currency", CurrencyType.TRY)
+        current_margin = ttm_ebit_cents / ttm_revenue_cents
+        tax_rate = 0.22
+        nopat = ttm_ebit_cents * (1 - tax_rate)
+
+        # 2. YÜKSEK YATIRIM (CAPEX) İHTİYACI
+        # Otomotiv sektörü yeni model platformları ve Elektrikli Araç (EV) hatları için 
+        # kârının devasa bir kısmını fabrikaya gömmek zorundadır.
+        reinvestment_rate = 0.50 # NOPAT'ın yarısı serbest nakde dönüşemez, yatırıma gider.
+        fcff = nopat * (1 - reinvestment_rate)
+
+        # 3. AĞIRLIKLI ORTALAMA SERMAYE MALİYETİ (WACC) HESAPLAMASI
+        risk_free_rate = macro_context.get("risk_free_rate", 0.35) 
+        erp = macro_context.get("equity_risk_premium", 0.08)
         
-        risk_free_rate = 0.35  
-        erp = 0.08             
-        discount_rate = self.calculate_wacc(risk_free_rate, self.SECTOR_BETA, erp)
-
-        # 1. OTOMOTİV MODEL DÖNGÜSÜ (Model Cycle Projection)
-        projected_cash_flows = []
-        current_fcf = base_fcf_cents
-        present_value_of_fcf = 0.0
+        # Otomotiv hisseleri, ağır sanayiye kıyasla ihracat koruması nedeniyle biraz daha defansiftir.
+        beta = macro_context.get("sector_beta", 1.15) 
         
-        # Varsayım: Otomotiv sektörü önümüzdeki 2 yıl elektrikli araç (EV) bantları için ağır yatırım (CapEx)
-        # yapacak, nakit akışı yavaşlayacak, 3. yıldan itibaren satış patlamasıyla hasat toplanacak.
-        # Bu pattern: J-Curve (J Eğrisi) nakit akışıdır.
-        growth_path = [0.05, 0.02, 0.15, 0.12, 0.05]
+        cost_of_equity = risk_free_rate + (beta * erp)
+        after_tax_cod = (risk_free_rate + 0.04) * (1 - tax_rate) 
         
-        for year in range(1, self.PROJECTION_YEARS + 1):
-            growth = growth_path[year - 1]
-            current_fcf = current_fcf * (1 + growth)
-            projected_cash_flows.append(current_fcf)
-            
-            discount_factor = (1 + discount_rate) ** year
-            present_value_of_fcf += (current_fcf / discount_factor)
+        # Sermaye Yapısı: Fabrika ve bant yatırımları için %40 Borç, %60 Özkaynak varsayımı
+        w_debt, w_equity = 0.40, 0.60
+        wacc = (w_equity * cost_of_equity) + (w_debt * after_tax_cod)
 
-        # 2. UÇ DEĞER VE FİRMA DEĞERİ
-        terminal_value = (projected_cash_flows[-1] * (1 + self.TERMINAL_GROWTH_RATE)) / (discount_rate - self.TERMINAL_GROWTH_RATE)
-        pv_of_terminal_value = terminal_value / ((1 + discount_rate) ** self.PROJECTION_YEARS)
+        # 4. GORDON BÜYÜME MODELİ & FİRMA DEĞERİ
+        # İhracat ve Euro enflasyonu nedeniyle stabil büyüme
+        terminal_growth = macro_context.get("long_term_growth_rate", 0.03)
         
-        enterprise_value_cents = present_value_of_fcf + pv_of_terminal_value
+        if wacc - terminal_growth < 0.05:
+            wacc = terminal_growth + 0.05
 
-        # 3. KİRA (IFRS-16) VE NET BORÇ DÜZELTMESİ
-        net_debt_cents = metadata.get("balance_sheet_snapshot", {}).get("net_debt_cents", 0)
-        target_equity_value_cents = enterprise_value_cents - net_debt_cents
+        enterprise_value_cents = (fcff * (1 + terminal_growth)) / (wacc - terminal_growth)
 
-        target_equity_value_tl = target_equity_value_cents / 100.0
+        # 5. NET BORÇ DÜŞÜMÜ
+        net_debt_cents = metadata.get("net_debt_cents", 0.0) 
+        equity_value_cents = enterprise_value_cents - net_debt_cents
+        
+        if equity_value_cents < 0:
+            equity_value_cents = 0.0
+
+        target_equity_value_tl = equity_value_cents / 100.0
 
         model_report = {
-            "model_used": "Otomotiv_Model_Cycle_DCF",
-            "applied_wacc": discount_rate,
-            "functional_currency_flag": func_currency.value,
-            "pv_of_fcf_tl": present_value_of_fcf / 100,
+            "model_used": "Automotive_Capacity_DCF",
+            "current_ebit_margin": current_margin,
+            "reinvestment_rate": reinvestment_rate,
+            "wacc_applied": wacc,
             "enterprise_value_tl": enterprise_value_cents / 100,
+            "net_debt_deducted_tl": net_debt_cents / 100
         }
 
         return target_equity_value_tl, model_report

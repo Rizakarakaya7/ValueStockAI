@@ -6,8 +6,8 @@ logger = logging.getLogger(__name__)
 class PetrokimyaHook:
     """
     PETROKİMYA SEKTÖRÜ PİYASA REJİMİ KANCASI
-    Rafineri Marjlarını (Crack Spread), Petrol fiyatlarındaki ani şokları (Stok Etkisi) 
-    ve Küresel Sanayi talebini modele uygular.
+    Rafineri Marjlarını (Crack Spread), Petrol Stok Şoklarını ve 
+    Karbon Emisyon / ESG risklerini modele uygular.
     """
 
     @staticmethod
@@ -21,37 +21,28 @@ class PetrokimyaHook:
         logger.info(f"[{ticker}] Petrokimya Makro Hook devrede. Crack Spread ve Stok Etkisi taranıyor.")
         
         if base_intrinsic_value_tl <= 0:
-            return base_intrinsic_value_tl, {"hook_status": "Bypassed"}
+            return base_intrinsic_value_tl, {"hook_status": "Bypassed due to base value <= 0"}
 
-        adjusted_value = base_intrinsic_value_tl
-        hook_report = {
-            "applied_adjustments": [],
-            "total_discount_or_premium_pct": 0.0
-        }
-        
+        hook_report = {"applied_adjustments": []}
         total_adjustment_pct = 0.0
 
         # KURAL 1: RAFİNERİ MARJLARI (Mediterranean Crack Spread)
-        # Ham petrol ile işlenmiş ürün (Motorin, Jet Yakıtı) arasındaki fiyat farkıdır. Şirketin ana kâr motorudur.
-        crack_spread_trend = macro_context.get("med_crack_spread_trend", "stable")
-        
+        crack_spread_trend = macro_context.get("med_crack_spread_trend", "stable").lower()
         if crack_spread_trend == "severe_contraction":
-            penalty = -0.15 # Marjlar daralıyor, operasyonel kâr çökecek.
+            penalty = -0.15 
             total_adjustment_pct += penalty
             hook_report["applied_adjustments"].append({
                 "factor": "Severe Crack Spread Contraction", "impact_pct": penalty * 100
             })
         elif crack_spread_trend == "expansion":
-            premium = 0.12 # Marj rallisi, şirket para basacak.
+            premium = 0.12 
             total_adjustment_pct += premium
             hook_report["applied_adjustments"].append({
                 "factor": "Strong Crack Spread Expansion", "impact_pct": premium * 100
             })
 
         # KURAL 2: BRENT PETROL ŞOKLARI (Stok Kârı / Zararı)
-        # Tüpraş gibi devler ellerinde aylarca yetecek petrol tutar. Petrol aniden düşerse milyarlarca lira "Stok Zararı" yazarlar.
-        brent_shock = macro_context.get("brent_inventory_effect", "neutral")
-        
+        brent_shock = macro_context.get("brent_inventory_effect", "neutral").lower()
         if brent_shock == "massive_inventory_loss":
             penalty = -0.10
             total_adjustment_pct += penalty
@@ -65,6 +56,21 @@ class PetrokimyaHook:
                 "factor": "Expected Inventory Windfall Gain", "impact_pct": premium * 100
             })
 
+        # KURAL 3: KARBON EMİSYON MALİYETİ (ESG & Sürdürülebilirlik Riski)
+        # Rafineriler karbon vergisinden en çok etkilenen tesislerdir. Şirketin yeşil yatırımları yoksa uzun vadede marjları erir.
+        green_transition_status = metadata.get("esg_metrics", {}).get("petchem_green_transition", "low").lower()
+        carbon_tax_active = macro_context.get("global_carbon_tax_pressure", True)
+        
+        if carbon_tax_active and green_transition_status == "low":
+             penalty = -0.05
+             total_adjustment_pct += penalty
+             hook_report["applied_adjustments"].append({
+                "factor": "High Carbon Emission Penalty & Low Green Transition", "impact_pct": penalty * 100
+            })
+
+        # CLAMPING: Kümülatif etkinin ekstrem dalgalanmaları bozmasını engellemek için sınırlandırma
+        total_adjustment_pct = max(-0.30, min(0.25, total_adjustment_pct))
+        
         adjusted_value = base_intrinsic_value_tl * (1 + total_adjustment_pct)
         
         hook_report["total_discount_or_premium_pct"] = round(total_adjustment_pct * 100, 2)

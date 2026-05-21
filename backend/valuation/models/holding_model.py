@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 class HoldingModel(BaseValuationModel):
     """
-    HOLDİNG ŞİRKETLERİ MODELLİ (Örn: KCHOL, SAHOL)
+    HOLDİNG ŞİRKETLERİ MODELLİ (Örn: KCHOL, SAHOL, AEFES)
     Konsolide Özkaynak Kârlılığı (ROE) ve Net Aktif Değer (NAV) yaklaşımı.
     Holdingler iştiraklerinin toplamıdır, bu nedenle konsolide bilanço büyüklüğü esastır.
     """
@@ -28,8 +28,22 @@ class HoldingModel(BaseValuationModel):
         logger.info(f"[{ticker}] Holding Konsolide NAV/ROE Motoru çalıştırılıyor.")
         
         # 1. BİLANÇODAN GİRDİLERİN ÇEKİLMESİ
-        equity_keys = [k for k in get_taxonomy_keys(reporting_group, FinancialConcept.TOTAL_EQUITY) if k in df.index]
-        net_income_keys = [k for k in get_taxonomy_keys(reporting_group, FinancialConcept.NET_INCOME) if k in df.index]
+        
+        # Özkaynak Çekimi (Önce Ana Ortaklık aranır, yoksa Toplam Özkaynak kullanılır)
+        try:
+            equity_keys = [k for k in get_taxonomy_keys(reporting_group, FinancialConcept.PARENT_EQUITY) if k in df.index]
+            if not equity_keys:
+                equity_keys = [k for k in get_taxonomy_keys(reporting_group, FinancialConcept.TOTAL_EQUITY) if k in df.index]
+        except AttributeError:
+            equity_keys = [k for k in get_taxonomy_keys(reporting_group, FinancialConcept.TOTAL_EQUITY) if k in df.index]
+
+        # Net Kâr Çekimi (Önce Ana Ortaklık payı aranır, yoksa Toplam Kâr kullanılır)
+        try:
+            net_income_keys = [k for k in get_taxonomy_keys(reporting_group, FinancialConcept.NET_INCOME_PARENT) if k in df.index]
+            if not net_income_keys:
+                net_income_keys = [k for k in get_taxonomy_keys(reporting_group, FinancialConcept.NET_INCOME) if k in df.index]
+        except AttributeError:
+            net_income_keys = [k for k in get_taxonomy_keys(reporting_group, FinancialConcept.NET_INCOME) if k in df.index]
         
         if not equity_keys or not net_income_keys:
             logger.error(f"[{ticker}] Holding değerlemesi için Özkaynak veya Net Kâr kalemi bulunamadı.")

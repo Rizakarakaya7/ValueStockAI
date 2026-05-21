@@ -25,7 +25,9 @@ class CapexDeductor:
         CompanyArchetype.J_CURVE,
         CompanyArchetype.REGULATED_YIELD,
         CompanyArchetype.BACKLOG_DRIVEN,
-        CompanyArchetype.SUBSCRIPTION
+        CompanyArchetype.SUBSCRIPTION,
+        CompanyArchetype.DEPLETING_ASSET,# <-- DÜZELTME EKLENDİ (Madencilik vb. için)
+        CompanyArchetype.CONSUMER_STAPLES    
     }
 
     REQUIRED_ROWS = ['CALC_SMOOTHED_EBITDA_TTM']
