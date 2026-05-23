@@ -62,15 +62,17 @@ class AnalystAgent:
     # Risk hesaplaması artık sektör bazlı olarak Hooks'ta (Örn: petrokimya_hooks.py) yapılıyor.
 
     def _decision_engine(self, upside: float, risk_score: int) -> str:
+        
         """Kural Bazlı Karar Motoru"""
-        if upside > 35 and risk_score <= 4:
+        
+        adjusted_risk = risk_score - 2 if upside > 100 else risk_score
+        if upside > 30 and risk_score <= 6:
             return "AL"
-        elif upside > 15 and risk_score <= 6:
+        elif upside > 15 and risk_score <= 7:
             return "TUT"
-        elif risk_score >= 8:
+        elif risk_score >= 9:
             return "UZAK DUR"
-        elif upside < 0:
-            return "SAT"
+        
         else:
             return "TUT"
 

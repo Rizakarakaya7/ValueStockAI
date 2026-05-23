@@ -133,6 +133,15 @@ if run_button:
                     # Başlığı tam ortaya alıyoruz
                     st.markdown(f"<h3 style='text-align: center;'>{ticker_input} Finansal Özeti</h3>", unsafe_allow_html=True)
                     
+                    st.write("<br><br><br>", unsafe_allow_html=True)
+                    st.markdown(
+                        "<p style='text-align: center; color: #718096; font-size: 13px; font-style: italic;'>"
+                        "⚠️ <b>Yasal Uyarı:</b> Burada yer alan yatırım bilgi, yorum ve tavsiyeleri yatırım danışmanlığı kapsamında değildir. "
+                        "Bu analizler yalnızca bilgilendirme amaçlı olup, herhangi bir yatırım enstrümanı için alım-satım önerisi teşkil etmez."
+                        "</p>",
+                        unsafe_allow_html=True
+                    )
+                     
                     # ==========================================
                     # LOGOYU SONUÇLARIN TEPESİNE ORTALAMA (Bir Tık Büyütüldü)
                     # ==========================================
